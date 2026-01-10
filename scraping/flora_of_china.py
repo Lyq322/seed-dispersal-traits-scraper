@@ -292,9 +292,9 @@ def main():
             continue
 
         family_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-        family_desc_links = extract_links(volume_content, family_desc_pattern, "http://www.efloras.org/", return_text=True)
+        family_desc_links = extract_links(volume_content, family_desc_pattern, "http://www.efloras.org/", return_text=True, container_id="ucFloraTaxonList_panelTaxonList")
         genus_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
-        genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/")
+        genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/", container_id="ucFloraTaxonList_panelTaxonList")
         print(f"      Found {len(family_desc_links)} family descriptions and {len(genus_list_urls)} genus lists")
 
         # Step 4: Process each family description page
