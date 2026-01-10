@@ -1,275 +1,391 @@
 """
-Adapted from https://github.com/mbamba2093/Flower-Color-Habitat-Environment-Association
-https://doi.org/10.1101/2025.02.11.637746
+Scraper for Flora of China website.
+Saves raw HTML and text for all pages in the hierarchy as JSONL:
+Base → Volumes → Families → Genus Lists → Genus Descriptions → Species Lists → Species Descriptions
 """
 
 import requests
 from bs4 import BeautifulSoup
 import re
-import pandas as pd
-import pickle
 import time
 import random
-import sys
+import json
+from datetime import datetime
+from urllib.parse import urljoin, urlparse, parse_qs
+from pathlib import Path
 
-def Extract_description(taxon_id):
-    base_url = "http://www.efloras.org/florataxon.aspx?flora_id=2&taxon_id="
-    positive_words = ["Herbs", "Shrubs", "Trees", "Plants", "Climbers", "Creepers", "Stem", "Subshrubs", "Perennial", "Annuals","Caudex", "Roots", "Main", "Petals", "Sepals", "Rhizome", "Basal", "Rootstock", "Rosette", "Leaf"]
-    ng_word = " after publication of the family treatment for the Flora of China."
-    # Indicates a descriptive paragraph when these positive_words are included
-    # Taxa containing 'ng_ward' do not have descriptive information
+# Global configuration
+BASE_URL = "http://www.efloras.org/flora_page.aspx?flora_id=2"
+OUTPUT_DIR = Path("data/flora_of_china_raw")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    response_species = requests.get(f"{base_url}{taxon_id}")
-    if response_species.status_code != 200:
-        retries = 0
-        max_retries = 10
-        time.sleep(10)
-        while retries < max_retries:
-            response_species = requests.get(Species_i_url)
-            if response_species.status_code == 200:
-                break
-            retries += 1
+# Global session and file handles
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+})
+jsonl_file = None
 
-    if response_species.status_code != 200:
-        print(f"{taxon_id} is Status {response_species.status_code}")
-        return "Status Error"
+
+def get_jsonl_file():
+    """Get or create the single JSONL file handle."""
+    global jsonl_file
+    if jsonl_file is None:
+        jsonl_path = OUTPUT_DIR / "flora_of_china.jsonl"
+        jsonl_file = open(jsonl_path, 'a', encoding='utf-8')
+    return jsonl_file
+
+
+def close_jsonl_file():
+    """Close the JSONL file handle."""
+    global jsonl_file
+    if jsonl_file:
+        jsonl_file.close()
+        jsonl_file = None
+
+
+def extract_taxon_name(html_content):
+    """Extract taxon name from HTML content."""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Try to extract from title tag first
+    title_tag = soup.find('title')
+    if title_tag:
+        title_text = title_tag.get_text()
+        # Pattern: "FamilyName in Flora of China @ efloras.org"
+        match = re.match(r'^([^i]+?)\s+in\s+Flora', title_text)
+        if match:
+            return match.group(1).strip()
+    
+    # Try to extract from content - look for pattern like "24. <b>Aspleniaceae</b>"
+    lbl_taxon_desc = soup.find('span', id='lblTaxonDesc')
+    if lbl_taxon_desc:
+        # Look for bold tags that might contain the taxon name
+        bold_tags = lbl_taxon_desc.find_all('b')
+        if bold_tags:
+            # Usually the first bold tag contains the taxon name
+            name = bold_tags[0].get_text().strip()
+            # Remove leading numbers and periods if present (e.g., "24. Aspleniaceae")
+            name = re.sub(r'^\d+\.\s*', '', name)
+            if name:
+                return name
+    
+    return None
+
+
+def save_page(url, page_type, identifier, html_content=None, family_name=None, genus_name=None, species_name=None):
+    """Save raw HTML and text for a page as JSONL."""
+    global session
+    try:
+        if html_content is None:
+            response = session.get(url, timeout=30)
+            if response.status_code != 200:
+                print(f"Error {response.status_code} for {url}")
+                return False
+            html_content = response.text
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        text_content = soup.get_text()
+        lines = (line.strip() for line in text_content.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text_content = '\n'.join(chunk for chunk in chunks if chunk)
+
+        # Extract taxon name if not provided
+        taxon_name = extract_taxon_name(html_content)
+        
+        # Set names based on page type if not provided
+        if page_type == "family" and not family_name:
+            family_name = taxon_name
+        elif page_type == "genus" and not genus_name:
+            genus_name = taxon_name
+        elif page_type == "species" and not species_name:
+            species_name = taxon_name
+
+        page_data = {
+            "url": url,
+            "page_type": page_type,
+            "identifier": identifier,
+            "family_name": family_name,
+            "genus_name": genus_name,
+            "species_name": species_name,
+            "raw_html": html_content,
+            "raw_text": text_content,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        jsonl_file = get_jsonl_file()
+        jsonl_file.write(json.dumps(page_data, ensure_ascii=False) + '\n')
+        jsonl_file.flush()
+
+        print(f"Saved {page_type}: {identifier}")
+        return True
+
+    except Exception as e:
+        print(f"Error saving {url}: {e}")
+        return False
+
+
+def extract_links(html_content, url_pattern, base_url=None):
+    """Extract links matching a pattern from HTML content."""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    links = []
+
+    if isinstance(url_pattern, str):
+        pattern = re.compile(url_pattern)
     else:
-        soup_species = BeautifulSoup(response_species.text, 'html.parser')
-        species_desc = soup_species.find_all('span', id='lblTaxonDesc')
-        species_desc = species_desc[0].find_all('p')
-        species_desc = species_desc[0]
+        pattern = url_pattern
 
-        return_key = 0
-        herbs_lines = []
-        for p1 in species_desc.get_text().split('\n'):
-            if p1 != "\r" and p1 != "":
-                herbs_lines.append(p1)
-                return_key += 1
-        result_description = "::".join(herbs_lines)
+    for link in soup.find_all('a', href=pattern):
+        href = link.get('href')
+        if href:
+            if base_url:
+                full_url = urljoin(base_url, href)
+            else:
+                full_url = href
+            links.append(full_url)
 
-        if return_key == 0 or ng_word in result_description:
-            if any(positive_word in result_description for positive_word in positive_words):
-                return result_description
-            print(taxon_id)
-            return "No_description"
-        else:
-            return result_description
+    return links
 
 
-def Extract_taxalist(taxon_id, target = "non-volume", maxpages = 5):
-    base_url = "http://www.efloras.org/browse.aspx?flora_id=2&start_taxon_id="
-    volume_url = f"http://www.efloras.org/"
+def get_page_content(url, max_retries=5):
+    """Fetch page content with retries."""
+    global session
+    for attempt in range(max_retries):
+        try:
+            response = session.get(url, timeout=30)
+            if response.status_code == 200:
+                return response.text
+            elif response.status_code == 404:
+                print(f"404 Not Found: {url}")
+                return None
+            else:
+                print(f"Status {response.status_code} for {url}, attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    time.sleep(10)
+        except Exception as e:
+            print(f"Error fetching {url}, attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(10)
 
-    if not target == "non-volume":
-        base_url = volume_url
+    return None
 
-    # Assuming page listings 1-5.
-    # Since FOC are displaying 200 taxa per page
 
-    html_list = []
-    start_page = 1
-    while start_page < maxpages:
-        taxa_url = f"{base_url}{taxon_id}&page={start_page}"
-        response_taxa = requests.get(taxa_url)
+def extract_id_from_url(url, param_name):
+    """Extract ID parameter from URL."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    if param_name in params:
+        return params[param_name][0]
+    return None
 
-        # Redirect when there is no response from the server
-        if response_taxa.status_code != 200:
-            retries = 0
-            max_retries = 10
-            time.sleep(10)
-            while retries < max_retries:
-                print(f"Retry {taxon_id}")
-                response_taxa = requests.get(taxa_url)
-                if response_taxa.status_code == 200:
-                    break
-                retries += 1
 
-        if response_taxa.status_code != 200:
-            print(f"{taxon_id} is Status {response_taxa.status_code}")
-            return "Empty data"
+def main():
+    """Main scraping function."""
+    print("Starting Flora of China scraper...")
 
-        # Check if the target table exists.
-        soup_taxa = BeautifulSoup(response_taxa.text, 'html.parser')
-        tables_taxa = soup_taxa.find_all('table')
-        rows = tables_taxa[0].find_all('tr', class_='underline')
-        if rows:
-            """
-            html_list.append(soup_taxa.prettify())#soup_taxa
-            """
-            rowtemp = []
-            for row in rows:
-                rowtemp.append(row.prettify())
-            html_list.append(" ".join(rowtemp))
-            start_page += 1
-        else:
-            break
+    # Step 1: Get base page
+    print("\n=== Step 1: Fetching base page ===")
+    base_content = get_page_content(BASE_URL)
+    if not base_content:
+        print("Failed to fetch base page")
+        return
 
-    if not html_list:
-        print("no_html")
-        return "Empty data"
+    # Step 2: Extract volume links
+    print("\n=== Step 2: Extracting volume links ===")
+    volume_pattern = re.compile(r'volume_page\.aspx\?volume_id=\d+&flora_id=2')
+    volume_urls = extract_links(base_content, volume_pattern, "http://www.efloras.org/")
 
-    # Combine the htmls from multiple pages.
-    # Then, analyze and extract taxa tables
+    print(f"Found {len(volume_urls)} volumes")
 
-    combined_html = '<table>' + "".join(html_list) + '</table>'
-    soup_taxa = BeautifulSoup(combined_html, 'html.parser')
-    tables_taxa = soup_taxa.find_all('table')
-    rows = tables_taxa[0].find_all('tr', class_='underline')
-    taxa_list = []
-    for row in rows:
-        cols = row.find_all('td')
-        cols = [ele.text.strip() for ele in cols]
-        taxa_list.append([ele for ele in cols if ele])
+    # Step 3: Process each volume
+    for vol_idx, volume_url in enumerate(volume_urls, 1):
+        print(f"\n=== Processing Volume {vol_idx}/{len(volume_urls)}: {volume_url} ===")
 
-    if not taxa_list:
-        print("no_taxalist")
-        return "Empty data"
+        volume_id = extract_id_from_url(volume_url, 'volume_id')
+        if not volume_id:
+            print(f"Could not extract volume_id from {volume_url}")
+            continue
 
-    # Cleaning the table.
-    # Since the tables come from multiple htmls, header and fotter were included.
-    remove_index = set()
-    for i in range(len(taxa_list)):
-        if taxa_list[i] == []:
-            remove_index.add(i)
-            if i + 1 < len(taxa_list):
-                remove_index.add(i + 1)
+        volume_content = get_page_content(volume_url)
+        if not volume_content:
+            print(f"Failed to fetch volume page: {volume_url}")
+            continue
 
-    for indexi in sorted(remove_index, reverse=True):
-        taxa_list.pop(indexi)
+        # Extract family links (florataxon.aspx format)
+        print(f"  Extracting family links from volume {volume_id}...")
+        family_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
+        family_desc_urls = extract_links(volume_content, family_pattern, "http://www.efloras.org/")
 
-    # Transform to dataframe
-    taxa_df = pd.DataFrame(taxa_list)
-    max_cols = max(len(row) for row in taxa_list)
-    column_names = ['Taxon Id', 'Name'] + [f'Info{i}' for i in range(1, max_cols - 1)]
-    taxa_df.columns = column_names[:max_cols]
-    taxa_df["Name"] = [' '.join(i.replace('\n', ' ').split()) for i in taxa_df["Name"]] # Sometaxa contains
+        # Extract genus list links (browse.aspx format)
+        print(f"  Extracting genus list links from volume {volume_id}...")
+        genus_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
+        genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/")
 
-    temp_dict = {}
-    for index, row in taxa_df.iterrows():
-        # {Name: {id: Taxon Id}}
-        temp_dict[row['Name']] = {'id': row['Taxon Id']}
+        family_desc_urls = list(set(family_desc_urls))
+        genus_list_urls = list(set(genus_list_urls))
 
-    return temp_dict
+        print(f"  Found {len(family_desc_urls)} family description links and {len(genus_list_urls)} genus list links")
+
+        # Step 4: Process each family description page
+        for fam_idx, family_desc_url in enumerate(family_desc_urls, 1):
+            print(f"    Processing Family {fam_idx}/{len(family_desc_urls)}: {family_desc_url}")
+
+            family_id = extract_id_from_url(family_desc_url, 'taxon_id')
+            if not family_id:
+                continue
+
+            family_content = get_page_content(family_desc_url)
+            if family_content:
+                family_name = extract_taxon_name(family_content)
+                save_page(family_desc_url, "family", f"family_{family_id}", family_content, 
+                         family_name=family_name)
+
+            time.sleep(random.uniform(1, 3))
+
+        # Step 5: Process each genus list page
+        for gen_list_idx, genus_list_url in enumerate(genus_list_urls, 1):
+            print(f"    Processing Genus List {gen_list_idx}/{len(genus_list_urls)}: {genus_list_url}")
+
+            genus_list_id = extract_id_from_url(genus_list_url, 'start_taxon_id')
+            if not genus_list_id:
+                continue
+
+            genus_list_content = get_page_content(genus_list_url)
+            if not genus_list_content:
+                continue
+
+            # Extract genus description links (florataxon.aspx format)
+            print(f"      Extracting genus description links...")
+            genus_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
+            genus_desc_urls = extract_links(genus_list_content, genus_desc_pattern, "http://www.efloras.org/")
+            genus_desc_urls = list(set(genus_desc_urls))
+
+            # Extract species list links (browse.aspx format)
+            print(f"      Extracting species list links...")
+            species_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
+            species_list_urls = extract_links(genus_list_content, species_list_pattern, "http://www.efloras.org/")
+            species_list_urls = list(set(species_list_urls))
+
+            print(f"      Found {len(genus_desc_urls)} genus descriptions and {len(species_list_urls)} species lists")
+
+            # Step 6: Process each genus description page
+            # We need to find which family this genus belongs to
+            # Try to extract from the genus list page or we'll need to track it
+            # For now, we'll extract it from the genus description page's breadcrumb or content
+            for gen_desc_idx, genus_desc_url in enumerate(genus_desc_urls, 1):
+                print(f"        Processing Genus Description {gen_desc_idx}/{len(genus_desc_urls)}: {genus_desc_url}")
+
+                genus_id = extract_id_from_url(genus_desc_url, 'taxon_id')
+                if not genus_id:
+                    continue
+
+                genus_desc_content = get_page_content(genus_desc_url)
+                if genus_desc_content:
+                    genus_name = extract_taxon_name(genus_desc_content)
+                    # Try to extract family name from the page (might be in breadcrumb or content)
+                    family_name = None
+                    soup = BeautifulSoup(genus_desc_content, 'html.parser')
+                    # Look for family link in breadcrumb or in the page
+                    family_link = soup.find('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
+                    if family_link:
+                        # The link text might be the family name, but we need to check the hierarchy
+                        # For now, we'll try to get it from the taxon chain
+                        taxon_chain = soup.find('span', id='lblTaxonChain')
+                        if taxon_chain:
+                            # Look for family links in the chain
+                            family_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
+                            if family_links:
+                                # Get the family name from the link text or fetch the family page
+                                family_href = family_links[-1].get('href')
+                                if family_href:
+                                    family_url = urljoin("http://www.efloras.org/", family_href)
+                                    # We could fetch it, but for now, try to extract from link text
+                                    family_name = family_links[-1].get_text().strip()
+                    
+                    save_page(genus_desc_url, "genus", f"genus_{genus_id}", genus_desc_content,
+                             family_name=family_name, genus_name=genus_name)
+
+                time.sleep(random.uniform(1, 3))
+
+            # Step 7: Process each species list page
+            # We need to track the genus and family for species
+            # Get the genus name from the previous loop
+            current_genus_name = None
+            current_family_name = None
+            
+            for spec_list_idx, species_list_url in enumerate(species_list_urls, 1):
+                print(f"        Processing Species List {spec_list_idx}/{len(species_list_urls)}: {species_list_url}")
+
+                species_list_id = extract_id_from_url(species_list_url, 'start_taxon_id')
+                if not species_list_id:
+                    continue
+
+                species_list_content = get_page_content(species_list_url)
+                if not species_list_content:
+                    continue
+
+                # Extract species description links (florataxon.aspx format)
+                print(f"          Extracting species description links...")
+                species_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
+                species_desc_urls = extract_links(species_list_content, species_desc_pattern, "http://www.efloras.org/")
+                species_desc_urls = list(set(species_desc_urls))
+
+                print(f"          Found {len(species_desc_urls)} species descriptions")
+
+                # Step 8: Process each species description page
+                for spec_desc_idx, species_desc_url in enumerate(species_desc_urls, 1):
+                    print(f"            Processing Species Description {spec_desc_idx}/{len(species_desc_urls)}: {species_desc_url}")
+
+                    species_id = extract_id_from_url(species_desc_url, 'taxon_id')
+                    if not species_id:
+                        continue
+
+                    species_desc_content = get_page_content(species_desc_url)
+                    if species_desc_content:
+                        species_name = extract_taxon_name(species_desc_content)
+                        # Try to extract family and genus from the page
+                        soup = BeautifulSoup(species_desc_content, 'html.parser')
+                        family_name = current_family_name
+                        genus_name = current_genus_name
+                        
+                        # Look in taxon chain for family and genus
+                        taxon_chain = soup.find('span', id='lblTaxonChain')
+                        if taxon_chain:
+                            # Find all taxon links in the chain
+                            taxon_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
+                            if len(taxon_links) >= 2:
+                                # Usually: Family | Genus | Species
+                                family_name = taxon_links[-2].get_text().strip() if len(taxon_links) >= 2 else None
+                            if len(taxon_links) >= 1:
+                                genus_name = taxon_links[-1].get_text().strip() if len(taxon_links) >= 1 else None
+                        
+                        # If not found in chain, try to extract from content
+                        if not family_name or not genus_name:
+                            # Look for genus name in the species name (usually "Genus species")
+                            if species_name and ' ' in species_name:
+                                parts = species_name.split()
+                                if len(parts) >= 2:
+                                    genus_name = parts[0]
+                        
+                        save_page(species_desc_url, "species", f"species_{species_id}", species_desc_content,
+                                 family_name=family_name, genus_name=genus_name, species_name=species_name)
+
+                    time.sleep(random.uniform(1, 3))
+
+                time.sleep(random.uniform(1, 2))
+
+            time.sleep(random.uniform(1, 2))
+
+        print(f"\nCompleted Volume {vol_idx}")
+        time.sleep(random.uniform(2, 5))
+
+    # Close JSONL file
+    close_jsonl_file()
+    print("\n=== Scraping completed ===")
 
 
 if __name__ == "__main__":
-    taxa_data_out = "data/flora_of_china"
-
-    # Top page URL
-    url_top = 'http://www.efloras.org/flora_page.aspx?flora_id=2'
-    response_top = requests.get(url_top)
-
-    # Read top page
-    soup_top = BeautifulSoup(response_top.text, 'html.parser')
-
-    #Volume search
-    url_pattern_volume = re.compile(r'volume_page\.aspx\?volume_id=\d+&flora_id=2')
-    Volume_url_list = []
-    for link in soup_top.find_all('a', href=url_pattern_volume):
-        href = link.get('href')
-        if href:
-            Volume_url_list.append(href)
-
-    # Volume 1 is an introduction.
-    Volume_url_list = Volume_url_list[1:]
-
-    Volume_url_list = Volume_url_list[5:]
-    for Volume_i in Volume_url_list:
-        taxa_data = {}
-        print(f"{Volume_i} volume started")
-
-        volume_name = Volume_i.split("volume_id=")[1].split("&")[0]
-        taxa_data[volume_name] = {"Family": Extract_taxalist(Volume_i, target = "volume")}
-
-        #tempid = 0
-        maxattempt = 5
-        retry_interval = 300
-
-        for Family_i in taxa_data[volume_name]["Family"].keys():
-            print(f"{Family_i} is started")
-            taxon_id_i = taxa_data[volume_name]["Family"][Family_i]["id"]
-
-            for attempt in range(maxattempt):
-                try:
-                    Extract_flags = Extract_taxalist(taxon_id_i)
-                    break
-                except Exception as e:
-                    print("Error")
-                    if attempt < maxattempt - 1:
-                        time.sleep(retry_interval)
-                    else:
-                        print("Max retry is over")
-                        sys.exit()
-
-            if Extract_flags == "Empty data":
-                print(f"{Family_i} is empty")
-                continue
-            else:
-                Extract_flags = {key:value for key, value in Extract_flags.items() if len(key.split()) < 2}
-                if "Genus" in taxa_data[volume_name]["Family"][Family_i].keys():
-                    if not set(Extract_flags.keys()) == set(taxa_data[volume_name]["Family"][Family_i]["Genus"].keys()):
-                        taxa_data[volume_name]["Family"][Family_i]["Genus"] = Extract_flags
-                else:
-                    taxa_data[volume_name]["Family"][Family_i]["Genus"] = Extract_flags
-
-            for Genus_i in taxa_data[volume_name]["Family"][Family_i]["Genus"].keys():
-                print(f"{Genus_i} is started")
-                taxon_id_i = taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["id"]
-
-                for attempt in range(maxattempt):
-                    try:
-                        Extract_flags = Extract_taxalist(taxon_id_i)
-                        break
-                    except Exception as e:
-                        print("Error")
-                        if attempt < maxattempt - 1:
-                            time.sleep(retry_interval)
-                        else:
-                            print("Max retry is over")
-                            sys.exit()
-
-                if Extract_flags == "Empty data":
-                    print(f"{Genus_i} is empty")
-                    continue
-                else:
-                    Extract_flags = {key:value for key, value in Extract_flags.items() if '\"' not in key}
-                    if "Species" in taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i].keys():
-                        if not set(Extract_flags.keys()) == set(taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"].keys()):
-                            taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"] = Extract_flags
-                    else:
-                        taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"] = Extract_flags
-
-                for Species_i in taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"].keys():
-                    if "Description" not in taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"][Species_i].keys() or taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"][Species_i]["Description"] == "No_description":
-                        print(Species_i)
-                        taxon_id_i = taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"][Species_i]["id"]
-
-                        for attempt in range(maxattempt):
-                            try:
-                                Extract_flags = Extract_description(taxon_id_i)
-                                break
-                            except Exception as e:
-                                print("Error")
-                                if attempt < maxattempt - 1:
-                                    time.sleep(retry_interval)
-                                else:
-                                    print("Max retry is over")
-                                    sys.exit()
-
-                        if Extract_flags == "Status Error":
-                            print(f"{Species_i} is Status Error")
-                            taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"][Species_i]["Description"] = "Status Error"
-                        else:
-                            taxa_data[volume_name]["Family"][Family_i]["Genus"][Genus_i]["Species"][Species_i]["Description"] = Extract_flags
-
-                        delay = random.randint(3, 10)  # 3秒から10秒のランダムな時間を生成
-                        time.sleep(delay)
-                        #tempid += 1
-                        #tempflag = False
-                    else:
-                        print(f"{Species_i} is skipped")
-                        continue
-
-        Taxa_data_out_temp = f"{Taxa_data_out}{volume_name}.pkl"
-        with open(Taxa_data_out_temp, 'wb') as f:
-            pickle.dump(taxa_data, f)
+    main()
