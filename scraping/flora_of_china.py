@@ -45,31 +45,20 @@ def close_jsonl_file():
 
 
 def extract_taxon_name(html_content):
-    """Extract taxon name from HTML content."""
+    """Extract taxon name from page title.
+    Title format: "TaxonName in Flora of China @ efloras.org"
+    """
     soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Try to extract from title tag first
+
     title_tag = soup.find('title')
     if title_tag:
-        title_text = title_tag.get_text()
-        # Pattern: "FamilyName in Flora of China @ efloras.org"
-        match = re.match(r'^([^i]+?)\s+in\s+Flora', title_text)
+        title_text = title_tag.get_text().strip()
+        # Pattern: "TaxonName in Flora of China @ efloras.org"
+        # Extract everything before " in Flora of China"
+        match = re.match(r'^(.+?)\s+in\s+Flora\s+of\s+China', title_text)
         if match:
             return match.group(1).strip()
-    
-    # Try to extract from content - look for pattern like "24. <b>Aspleniaceae</b>"
-    lbl_taxon_desc = soup.find('span', id='lblTaxonDesc')
-    if lbl_taxon_desc:
-        # Look for bold tags that might contain the taxon name
-        bold_tags = lbl_taxon_desc.find_all('b')
-        if bold_tags:
-            # Usually the first bold tag contains the taxon name
-            name = bold_tags[0].get_text().strip()
-            # Remove leading numbers and periods if present (e.g., "24. Aspleniaceae")
-            name = re.sub(r'^\d+\.\s*', '', name)
-            if name:
-                return name
-    
+
     return None
 
 
@@ -95,7 +84,7 @@ def save_page(url, page_type, identifier, html_content=None, family_name=None, g
 
         # Extract taxon name if not provided
         taxon_name = extract_taxon_name(html_content)
-        
+
         # Set names based on page type if not provided
         if page_type == "family" and not family_name:
             family_name = taxon_name
@@ -193,10 +182,12 @@ def main():
         print("Failed to fetch base page")
         return
 
-    # Step 2: Extract volume links
+    # Step 2: Extract volume (list of families) links
     print("\n=== Step 2: Extracting volume links ===")
     volume_pattern = re.compile(r'volume_page\.aspx\?volume_id=\d+&flora_id=2')
-    volume_urls = extract_links(base_content, volume_pattern, "http://www.efloras.org/")
+
+    # Skip first introductory volume
+    volume_urls = extract_links(base_content, volume_pattern, "http://www.efloras.org/")[1:]
 
     print(f"Found {len(volume_urls)} volumes")
 
@@ -214,12 +205,12 @@ def main():
             print(f"Failed to fetch volume page: {volume_url}")
             continue
 
-        # Extract family links (florataxon.aspx format)
-        print(f"  Extracting family links from volume {volume_id}...")
-        family_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-        family_desc_urls = extract_links(volume_content, family_pattern, "http://www.efloras.org/")
+        # Extract family description links
+        print(f"  Extracting family description links from volume {volume_id}...")
+        family_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
+        family_desc_urls = extract_links(volume_content, family_desc_pattern, "http://www.efloras.org/")
 
-        # Extract genus list links (browse.aspx format)
+        # Extract genus list links
         print(f"  Extracting genus list links from volume {volume_id}...")
         genus_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
         genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/")
@@ -240,7 +231,7 @@ def main():
             family_content = get_page_content(family_desc_url)
             if family_content:
                 family_name = extract_taxon_name(family_content)
-                save_page(family_desc_url, "family", f"family_{family_id}", family_content, 
+                save_page(family_desc_url, "family", f"family_{family_id}", family_content,
                          family_name=family_name)
 
             time.sleep(random.uniform(1, 3))
@@ -272,9 +263,7 @@ def main():
             print(f"      Found {len(genus_desc_urls)} genus descriptions and {len(species_list_urls)} species lists")
 
             # Step 6: Process each genus description page
-            # We need to find which family this genus belongs to
-            # Try to extract from the genus list page or we'll need to track it
-            # For now, we'll extract it from the genus description page's breadcrumb or content
+            # Extract family name from the taxon chain (breadcrumb navigation)
             for gen_desc_idx, genus_desc_url in enumerate(genus_desc_urls, 1):
                 print(f"        Processing Genus Description {gen_desc_idx}/{len(genus_desc_urls)}: {genus_desc_url}")
 
@@ -285,37 +274,30 @@ def main():
                 genus_desc_content = get_page_content(genus_desc_url)
                 if genus_desc_content:
                     genus_name = extract_taxon_name(genus_desc_content)
-                    # Try to extract family name from the page (might be in breadcrumb or content)
+                    # Extract family name from family page title
                     family_name = None
                     soup = BeautifulSoup(genus_desc_content, 'html.parser')
-                    # Look for family link in breadcrumb or in the page
-                    family_link = soup.find('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
-                    if family_link:
-                        # The link text might be the family name, but we need to check the hierarchy
-                        # For now, we'll try to get it from the taxon chain
-                        taxon_chain = soup.find('span', id='lblTaxonChain')
-                        if taxon_chain:
-                            # Look for family links in the chain
-                            family_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
-                            if family_links:
-                                # Get the family name from the link text or fetch the family page
-                                family_href = family_links[-1].get('href')
-                                if family_href:
-                                    family_url = urljoin("http://www.efloras.org/", family_href)
-                                    # We could fetch it, but for now, try to extract from link text
-                                    family_name = family_links[-1].get_text().strip()
-                    
+                    taxon_chain = soup.find('span', id='lblTaxonChain')
+                    if taxon_chain:
+                        # Find all taxon links in the chain (usually: FOC | Family List | Volume | Family)
+                        # The last taxon link should be the family
+                        taxon_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
+                        if taxon_links:
+                            # Fetch the family page to get its name from the title
+                            family_link = taxon_links[-1]
+                            family_href = family_link.get('href')
+                            if family_href:
+                                family_url = urljoin("http://www.efloras.org/", family_href)
+                                family_page_content = get_page_content(family_url)
+                                if family_page_content:
+                                    family_name = extract_taxon_name(family_page_content)
+
                     save_page(genus_desc_url, "genus", f"genus_{genus_id}", genus_desc_content,
                              family_name=family_name, genus_name=genus_name)
 
                 time.sleep(random.uniform(1, 3))
 
             # Step 7: Process each species list page
-            # We need to track the genus and family for species
-            # Get the genus name from the previous loop
-            current_genus_name = None
-            current_family_name = None
-            
             for spec_list_idx, species_list_url in enumerate(species_list_urls, 1):
                 print(f"        Processing Species List {spec_list_idx}/{len(species_list_urls)}: {species_list_url}")
 
@@ -346,30 +328,54 @@ def main():
                     species_desc_content = get_page_content(species_desc_url)
                     if species_desc_content:
                         species_name = extract_taxon_name(species_desc_content)
-                        # Try to extract family and genus from the page
+                        # Extract family and genus names from their page titles
                         soup = BeautifulSoup(species_desc_content, 'html.parser')
-                        family_name = current_family_name
-                        genus_name = current_genus_name
-                        
-                        # Look in taxon chain for family and genus
+                        family_name = None
+                        genus_name = None
+
+                        # Look in taxon chain for family and genus links
+                        # Chain format: FOC | Family List | Volume | Family | Genus
                         taxon_chain = soup.find('span', id='lblTaxonChain')
                         if taxon_chain:
                             # Find all taxon links in the chain
                             taxon_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
                             if len(taxon_links) >= 2:
-                                # Usually: Family | Genus | Species
-                                family_name = taxon_links[-2].get_text().strip() if len(taxon_links) >= 2 else None
-                            if len(taxon_links) >= 1:
-                                genus_name = taxon_links[-1].get_text().strip() if len(taxon_links) >= 1 else None
-                        
-                        # If not found in chain, try to extract from content
-                        if not family_name or not genus_name:
-                            # Look for genus name in the species name (usually "Genus species")
-                            if species_name and ' ' in species_name:
+                                # Second-to-last link is the family, last link is the genus
+                                # Fetch family page to get name from title
+                                family_link = taxon_links[-2]
+                                family_href = family_link.get('href')
+                                if family_href:
+                                    family_url = urljoin("http://www.efloras.org/", family_href)
+                                    family_page_content = get_page_content(family_url)
+                                    if family_page_content:
+                                        family_name = extract_taxon_name(family_page_content)
+
+                                # Fetch genus page to get name from title
+                                genus_link = taxon_links[-1]
+                                genus_href = genus_link.get('href')
+                                if genus_href:
+                                    genus_url = urljoin("http://www.efloras.org/", genus_href)
+                                    genus_page_content = get_page_content(genus_url)
+                                    if genus_page_content:
+                                        genus_name = extract_taxon_name(genus_page_content)
+                            elif len(taxon_links) == 1:
+                                # Only one link, assume it's the genus
+                                genus_link = taxon_links[-1]
+                                genus_href = genus_link.get('href')
+                                if genus_href:
+                                    genus_url = urljoin("http://www.efloras.org/", genus_href)
+                                    genus_page_content = get_page_content(genus_url)
+                                    if genus_page_content:
+                                        genus_name = extract_taxon_name(genus_page_content)
+
+                        # If genus not found, try to extract from species name
+                        if not genus_name and species_name:
+                            # Species name is usually "Genus species" or "Genus species subsp."
+                            if ' ' in species_name:
                                 parts = species_name.split()
                                 if len(parts) >= 2:
                                     genus_name = parts[0]
-                        
+
                         save_page(species_desc_url, "species", f"species_{species_id}", species_desc_content,
                                  family_name=family_name, genus_name=genus_name, species_name=species_name)
 
