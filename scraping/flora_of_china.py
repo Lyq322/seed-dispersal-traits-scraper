@@ -119,20 +119,30 @@ def save_page(url, page_type, identifier, html_content=None, family_name=None, g
         return False
 
 
-def extract_links(html_content, url_pattern, base_url=None, return_text=False):
+def extract_links(html_content, url_pattern, base_url=None, return_text=False, container_id=None):
     """Extract links matching a pattern from HTML content.
     If return_text is True, returns list of (url, text) tuples.
     Otherwise returns list of URLs.
+    If container_id is provided, only searches within that element.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
     links = []
+
+    # If container_id is specified, search only within that element
+    if container_id:
+        container = soup.find(id=container_id)
+        if not container:
+            return links
+        search_area = container
+    else:
+        search_area = soup
 
     if isinstance(url_pattern, str):
         pattern = re.compile(url_pattern)
     else:
         pattern = url_pattern
 
-    for link in soup.find_all('a', href=pattern):
+    for link in search_area.find_all('a', href=pattern):
         href = link.get('href')
         if href:
             if base_url:
@@ -189,16 +199,17 @@ def get_all_pages_from_browse(browse_url, max_pages=10):
     return pages
 
 
-def extract_links_from_all_pages(browse_url, url_pattern, base_url=None, return_text=False):
+def extract_links_from_all_pages(browse_url, url_pattern, base_url=None, return_text=False, container_id=None):
     """Extract links matching a pattern from all pages of a browse.aspx URL.
     If return_text is True, returns list of (url, text) tuples.
     Otherwise returns list of URLs.
+    If container_id is provided, only searches within that element.
     """
     all_links = []
     pages = get_all_pages_from_browse(browse_url)
 
     for page_content in pages:
-        links = extract_links(page_content, url_pattern, base_url, return_text=return_text)
+        links = extract_links(page_content, url_pattern, base_url, return_text=return_text, container_id=container_id)
         all_links.extend(links)
 
     # Remove duplicates - handle both URL strings and (url, text) tuples
@@ -306,11 +317,12 @@ def main():
 
             # Extract genus description links from all pages (florataxon.aspx format)
             genus_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-            genus_desc_links = extract_links_from_all_pages(genus_list_url, genus_desc_pattern, "http://www.efloras.org/", return_text=True)
+            genus_desc_links = extract_links_from_all_pages(genus_list_url, genus_desc_pattern, "http://www.efloras.org/", return_text=True, container_id="ucFloraTaxonList_panelTaxonList")
 
             # Extract each genus's species list links from all pages (browse.aspx format)
             species_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
-            species_list_urls = extract_links(genus_list_url, species_list_pattern, "http://www.efloras.org/")
+            genus_list_content = get_page_content(genus_list_url)
+            species_list_urls = extract_links(genus_list_content, species_list_pattern, "http://www.efloras.org/", container_id="ucFloraTaxonList_panelTaxonList")
 
             print(f"      Found {len(genus_desc_links)} genus descriptions and {len(species_list_urls)} species lists")
 
@@ -338,7 +350,7 @@ def main():
 
                 # Extract species description links from all pages (florataxon.aspx format)
                 species_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-                species_desc_links = extract_links_from_all_pages(species_list_url, species_desc_pattern, "http://www.efloras.org/", return_text=True)
+                species_desc_links = extract_links_from_all_pages(species_list_url, species_desc_pattern, "http://www.efloras.org/", return_text=True, container_id="ucFloraTaxonList_panelTaxonList")
                 print(f"          Found {len(species_desc_links)} species descriptions")
 
                 # Step 8: Process each species description page
