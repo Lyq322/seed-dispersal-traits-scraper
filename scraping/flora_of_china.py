@@ -31,7 +31,7 @@ def get_jsonl_file():
     """Get or create the single JSONL file handle."""
     global jsonl_file
     if jsonl_file is None:
-        jsonl_path = OUTPUT_DIR / "flora_of_china.jsonl"
+        jsonl_path = OUTPUT_DIR/"flora_of_china.jsonl"
         jsonl_file = open(jsonl_path, 'a', encoding='utf-8')
     return jsonl_file
 
@@ -46,18 +46,20 @@ def close_jsonl_file():
 
 def extract_taxon_name(html_content):
     """Extract taxon name from page title.
-    Title format: "TaxonName in Flora of China @ efloras.org"
+    Title format: "TaxonName in Flora of China @ efloras.org" or "TaxonName"
     """
     soup = BeautifulSoup(html_content, 'html.parser')
 
     title_tag = soup.find('title')
     if title_tag:
         title_text = title_tag.get_text().strip()
-        # Pattern: "TaxonName in Flora of China @ efloras.org"
-        # Extract everything before " in Flora of China"
-        match = re.match(r'^(.+?)\s+in\s+Flora\s+of\s+China', title_text)
-        if match:
-            return match.group(1).strip()
+
+        if "in Flora of China" in title_text:
+            match = re.match(r'^(.+?)\s+in\s+Flora\s+of\s+China', title_text)
+            if match:
+                return match.group(1).strip()
+        else:
+            return title_text.strip()
 
     return None
 
@@ -109,7 +111,7 @@ def save_page(url, page_type, identifier, html_content=None, family_name=None, g
         jsonl_file.write(json.dumps(page_data, ensure_ascii=False) + '\n')
         jsonl_file.flush()
 
-        print(f"Saved {page_type}: {identifier}")
+        # print(f"Saved {page_type}: {identifier}")
         return True
 
     except Exception as e:
@@ -117,8 +119,11 @@ def save_page(url, page_type, identifier, html_content=None, family_name=None, g
         return False
 
 
-def extract_links(html_content, url_pattern, base_url=None):
-    """Extract links matching a pattern from HTML content."""
+def extract_links(html_content, url_pattern, base_url=None, return_text=False):
+    """Extract links matching a pattern from HTML content.
+    If return_text is True, returns list of (url, text) tuples.
+    Otherwise returns list of URLs.
+    """
     soup = BeautifulSoup(html_content, 'html.parser')
     links = []
 
@@ -134,9 +139,79 @@ def extract_links(html_content, url_pattern, base_url=None):
                 full_url = urljoin(base_url, href)
             else:
                 full_url = href
-            links.append(full_url)
+
+            if return_text:
+                link_text = link.get_text().strip()
+                links.append((full_url, link_text))
+            else:
+                links.append(full_url)
 
     return links
+
+
+def get_all_pages_from_browse(browse_url, max_pages=10):
+    """Get all pages from a browse.aspx URL, handling pagination.
+    Returns list of HTML content from all pages.
+    """
+    pages = []
+    page_num = 1
+
+    while page_num <= max_pages:
+        # Construct URL for current page
+        if page_num == 1:
+            current_url = browse_url
+        else:
+            # Add or update page parameter
+            if '&page=' in browse_url:
+                current_url = re.sub(r'&page=\d+', f'&page={page_num}', browse_url)
+            else:
+                separator = '&' if '?' in browse_url else '?'
+                current_url = f"{browse_url}{separator}page={page_num}"
+
+        content = get_page_content(current_url)
+        if not content:
+            break
+
+        pages.append(content)
+
+        # Check if there's a next page by looking for page links in the content
+        soup = BeautifulSoup(content, 'html.parser')
+        # Look for links with page parameter greater than current page
+        next_page_pattern = re.compile(rf'browse\.aspx\?.*&page={page_num + 1}')
+        next_page_links = soup.find_all('a', href=next_page_pattern)
+
+        # If no next page link found, we've reached the last page
+        if not next_page_links:
+            break
+
+        page_num += 1
+
+    return pages
+
+
+def extract_links_from_all_pages(browse_url, url_pattern, base_url=None, return_text=False):
+    """Extract links matching a pattern from all pages of a browse.aspx URL.
+    If return_text is True, returns list of (url, text) tuples.
+    Otherwise returns list of URLs.
+    """
+    all_links = []
+    pages = get_all_pages_from_browse(browse_url)
+
+    for page_content in pages:
+        links = extract_links(page_content, url_pattern, base_url, return_text=return_text)
+        all_links.extend(links)
+
+    # Remove duplicates - handle both URL strings and (url, text) tuples
+    if return_text:
+        seen_urls = set()
+        unique_links = []
+        for url, text in all_links:
+            if url not in seen_urls:
+                seen_urls.add(url)
+                unique_links.append((url, text))
+        return unique_links
+    else:
+        return list(set(all_links))
 
 
 def get_page_content(url, max_retries=5):
@@ -187,13 +262,13 @@ def main():
     volume_pattern = re.compile(r'volume_page\.aspx\?volume_id=\d+&flora_id=2')
 
     # Skip first introductory volume
-    volume_urls = extract_links(base_content, volume_pattern, "http://www.efloras.org/")[1:]
+    volume_links = extract_links(base_content, volume_pattern, "http://www.efloras.org/", return_text=True)[1:]
 
-    print(f"Found {len(volume_urls)} volumes")
+    print(f"Found {len(volume_links)} volumes")
 
     # Step 3: Process each volume
-    for vol_idx, volume_url in enumerate(volume_urls, 1):
-        print(f"\n=== Processing Volume {vol_idx}/{len(volume_urls)}: {volume_url} ===")
+    for volume_url, volume_text in volume_links:
+        print(f"\n=== Processing {volume_text} ({volume_url}) ===")
 
         volume_id = extract_id_from_url(volume_url, 'volume_id')
         if not volume_id:
@@ -205,67 +280,44 @@ def main():
             print(f"Failed to fetch volume page: {volume_url}")
             continue
 
-        # Extract family description links
-        print(f"  Extracting family description links from volume {volume_id}...")
         family_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-        family_desc_urls = extract_links(volume_content, family_desc_pattern, "http://www.efloras.org/")
-
-        # Extract genus list links
-        print(f"  Extracting genus list links from volume {volume_id}...")
+        family_desc_links = extract_links(volume_content, family_desc_pattern, "http://www.efloras.org/", return_text=True)
         genus_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
         genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/")
-
-        family_desc_urls = list(set(family_desc_urls))
-        genus_list_urls = list(set(genus_list_urls))
-
-        print(f"  Found {len(family_desc_urls)} family description links and {len(genus_list_urls)} genus list links")
+        print(f"      Found {len(family_desc_links)} family descriptions and {len(genus_list_urls)} genus lists")
 
         # Step 4: Process each family description page
-        for fam_idx, family_desc_url in enumerate(family_desc_urls, 1):
-            print(f"    Processing Family {fam_idx}/{len(family_desc_urls)}: {family_desc_url}")
+        for fam_idx, (family_desc_url, family_text) in enumerate(family_desc_links, 1):
+            family_name = family_text
+            print(f"    Processing {fam_idx}/{len(family_desc_links)}: Family {family_name}'s description ({family_desc_url})")
 
             family_id = extract_id_from_url(family_desc_url, 'taxon_id')
-            if not family_id:
-                continue
-
             family_content = get_page_content(family_desc_url)
             if family_content:
-                family_name = extract_taxon_name(family_content)
                 save_page(family_desc_url, "family", f"family_{family_id}", family_content,
                          family_name=family_name)
 
             time.sleep(random.uniform(1, 3))
 
-        # Step 5: Process each genus list page
+        # Step 5: Process each family's genus list page
         for gen_list_idx, genus_list_url in enumerate(genus_list_urls, 1):
-            print(f"    Processing Genus List {gen_list_idx}/{len(genus_list_urls)}: {genus_list_url}")
+            family_name = extract_taxon_name(get_page_content(genus_list_url))
+            print(f"    Processing {gen_list_idx}/{len(genus_list_urls)}: Family {family_name}'s genus list ({genus_list_url})")
 
-            genus_list_id = extract_id_from_url(genus_list_url, 'start_taxon_id')
-            if not genus_list_id:
-                continue
-
-            genus_list_content = get_page_content(genus_list_url)
-            if not genus_list_content:
-                continue
-
-            # Extract genus description links (florataxon.aspx format)
-            print(f"      Extracting genus description links...")
+            # Extract genus description links from all pages (florataxon.aspx format)
             genus_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-            genus_desc_urls = extract_links(genus_list_content, genus_desc_pattern, "http://www.efloras.org/")
-            genus_desc_urls = list(set(genus_desc_urls))
+            genus_desc_links = extract_links_from_all_pages(genus_list_url, genus_desc_pattern, "http://www.efloras.org/", return_text=True)
 
-            # Extract species list links (browse.aspx format)
-            print(f"      Extracting species list links...")
+            # Extract each genus's species list links from all pages (browse.aspx format)
             species_list_pattern = re.compile(r'browse\.aspx\?flora_id=2&start_taxon_id=\d+')
-            species_list_urls = extract_links(genus_list_content, species_list_pattern, "http://www.efloras.org/")
-            species_list_urls = list(set(species_list_urls))
+            species_list_urls = extract_links(genus_list_url, species_list_pattern, "http://www.efloras.org/")
 
-            print(f"      Found {len(genus_desc_urls)} genus descriptions and {len(species_list_urls)} species lists")
+            print(f"      Found {len(genus_desc_links)} genus descriptions and {len(species_list_urls)} species lists")
 
             # Step 6: Process each genus description page
-            # Extract family name from the taxon chain (breadcrumb navigation)
-            for gen_desc_idx, genus_desc_url in enumerate(genus_desc_urls, 1):
-                print(f"        Processing Genus Description {gen_desc_idx}/{len(genus_desc_urls)}: {genus_desc_url}")
+            for gen_desc_idx, (genus_desc_url, genus_text) in enumerate(genus_desc_links, 1):
+                genus_name = genus_text
+                print(f"        Processing {gen_desc_idx}/{len(genus_desc_links)}: Genus {genus_name}'s description ({genus_desc_url})")
 
                 genus_id = extract_id_from_url(genus_desc_url, 'taxon_id')
                 if not genus_id:
@@ -274,24 +326,6 @@ def main():
                 genus_desc_content = get_page_content(genus_desc_url)
                 if genus_desc_content:
                     genus_name = extract_taxon_name(genus_desc_content)
-                    # Extract family name from family page title
-                    family_name = None
-                    soup = BeautifulSoup(genus_desc_content, 'html.parser')
-                    taxon_chain = soup.find('span', id='lblTaxonChain')
-                    if taxon_chain:
-                        # Find all taxon links in the chain (usually: FOC | Family List | Volume | Family)
-                        # The last taxon link should be the family
-                        taxon_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
-                        if taxon_links:
-                            # Fetch the family page to get its name from the title
-                            family_link = taxon_links[-1]
-                            family_href = family_link.get('href')
-                            if family_href:
-                                family_url = urljoin("http://www.efloras.org/", family_href)
-                                family_page_content = get_page_content(family_url)
-                                if family_page_content:
-                                    family_name = extract_taxon_name(family_page_content)
-
                     save_page(genus_desc_url, "genus", f"genus_{genus_id}", genus_desc_content,
                              family_name=family_name, genus_name=genus_name)
 
@@ -299,27 +333,18 @@ def main():
 
             # Step 7: Process each species list page
             for spec_list_idx, species_list_url in enumerate(species_list_urls, 1):
-                print(f"        Processing Species List {spec_list_idx}/{len(species_list_urls)}: {species_list_url}")
+                genus_name = extract_taxon_name(get_page_content(species_list_url))
+                print(f"        Processing {spec_list_idx}/{len(species_list_urls)}: Genus {genus_name}'s species list ({species_list_url})")
 
-                species_list_id = extract_id_from_url(species_list_url, 'start_taxon_id')
-                if not species_list_id:
-                    continue
-
-                species_list_content = get_page_content(species_list_url)
-                if not species_list_content:
-                    continue
-
-                # Extract species description links (florataxon.aspx format)
-                print(f"          Extracting species description links...")
+                # Extract species description links from all pages (florataxon.aspx format)
                 species_desc_pattern = re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+')
-                species_desc_urls = extract_links(species_list_content, species_desc_pattern, "http://www.efloras.org/")
-                species_desc_urls = list(set(species_desc_urls))
-
-                print(f"          Found {len(species_desc_urls)} species descriptions")
+                species_desc_links = extract_links_from_all_pages(species_list_url, species_desc_pattern, "http://www.efloras.org/", return_text=True)
+                print(f"          Found {len(species_desc_links)} species descriptions")
 
                 # Step 8: Process each species description page
-                for spec_desc_idx, species_desc_url in enumerate(species_desc_urls, 1):
-                    print(f"            Processing Species Description {spec_desc_idx}/{len(species_desc_urls)}: {species_desc_url}")
+                for spec_desc_idx, (species_desc_url, species_text) in enumerate(species_desc_links, 1):
+                    species_name = species_text
+                    print(f"            Processing {spec_desc_idx}/{len(species_desc_links)}: Species {species_name}'s description ({species_desc_url})")
 
                     species_id = extract_id_from_url(species_desc_url, 'taxon_id')
                     if not species_id:
@@ -327,55 +352,6 @@ def main():
 
                     species_desc_content = get_page_content(species_desc_url)
                     if species_desc_content:
-                        species_name = extract_taxon_name(species_desc_content)
-                        # Extract family and genus names from their page titles
-                        soup = BeautifulSoup(species_desc_content, 'html.parser')
-                        family_name = None
-                        genus_name = None
-
-                        # Look in taxon chain for family and genus links
-                        # Chain format: FOC | Family List | Volume | Family | Genus
-                        taxon_chain = soup.find('span', id='lblTaxonChain')
-                        if taxon_chain:
-                            # Find all taxon links in the chain
-                            taxon_links = taxon_chain.find_all('a', href=re.compile(r'florataxon\.aspx\?flora_id=2&taxon_id=\d+'))
-                            if len(taxon_links) >= 2:
-                                # Second-to-last link is the family, last link is the genus
-                                # Fetch family page to get name from title
-                                family_link = taxon_links[-2]
-                                family_href = family_link.get('href')
-                                if family_href:
-                                    family_url = urljoin("http://www.efloras.org/", family_href)
-                                    family_page_content = get_page_content(family_url)
-                                    if family_page_content:
-                                        family_name = extract_taxon_name(family_page_content)
-
-                                # Fetch genus page to get name from title
-                                genus_link = taxon_links[-1]
-                                genus_href = genus_link.get('href')
-                                if genus_href:
-                                    genus_url = urljoin("http://www.efloras.org/", genus_href)
-                                    genus_page_content = get_page_content(genus_url)
-                                    if genus_page_content:
-                                        genus_name = extract_taxon_name(genus_page_content)
-                            elif len(taxon_links) == 1:
-                                # Only one link, assume it's the genus
-                                genus_link = taxon_links[-1]
-                                genus_href = genus_link.get('href')
-                                if genus_href:
-                                    genus_url = urljoin("http://www.efloras.org/", genus_href)
-                                    genus_page_content = get_page_content(genus_url)
-                                    if genus_page_content:
-                                        genus_name = extract_taxon_name(genus_page_content)
-
-                        # If genus not found, try to extract from species name
-                        if not genus_name and species_name:
-                            # Species name is usually "Genus species" or "Genus species subsp."
-                            if ' ' in species_name:
-                                parts = species_name.split()
-                                if len(parts) >= 2:
-                                    genus_name = parts[0]
-
                         save_page(species_desc_url, "species", f"species_{species_id}", species_desc_content,
                                  family_name=family_name, genus_name=genus_name, species_name=species_name)
 
@@ -385,7 +361,7 @@ def main():
 
             time.sleep(random.uniform(1, 2))
 
-        print(f"\nCompleted Volume {vol_idx}")
+        print(f"\nCompleted {volume_text}")
         time.sleep(random.uniform(2, 5))
 
     # Close JSONL file
