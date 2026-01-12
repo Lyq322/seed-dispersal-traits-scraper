@@ -290,10 +290,11 @@ def main():
                 skip_orders = False
 
         # Step 2: Process order description page
-        order_content = get_page_content(order_url)
-        if order_content:
-            save_page(order_url, "order", order_id, order_content, order_name=order_name)
-        time.sleep(random.uniform(1, 3))
+        if resume_order != order_name:
+            order_content = get_page_content(order_url)
+            if order_content:
+                save_page(order_url, "order", order_id, order_content, order_name=order_name)
+            time.sleep(random.uniform(1, 3))
 
         # Step 3: Get list of families for this order
         logging.info(f"  Getting families for order {order_name}...")
@@ -319,11 +320,12 @@ def main():
             logging.info(f"    Processing {fam_idx}/{len(families)}: Family {family_name}'s description ({family_url})")
 
             # Step 4: Process family description page
-            family_content = get_page_content(family_url)
-            if family_content:
-                save_page(family_url, "family", family_id, family_content,
-                         order_name=order_name, family_name=family_name)
-            time.sleep(random.uniform(1, 3))
+            if resume_family != family_name:
+                family_content = get_page_content(family_url)
+                if family_content:
+                    save_page(family_url, "family", family_id, family_content,
+                            order_name=order_name, family_name=family_name)
+                time.sleep(random.uniform(1, 3))
 
             # Step 5: Get list of genera for this family
             logging.info(f"      Getting genera for family {family_name}...")
@@ -349,11 +351,12 @@ def main():
                 logging.info(f"        Processing {gen_idx}/{len(genera)}: Genus {genus_name}'s description ({genus_url})")
 
                 # Step 6: Process genus description page
-                genus_content = get_page_content(genus_url)
-                if genus_content:
-                    save_page(genus_url, "genus", genus_id, genus_content,
-                             order_name=order_name, family_name=family_name, genus_name=genus_name)
-                time.sleep(random.uniform(1, 3))
+                if resume_genus != genus_name:
+                    genus_content = get_page_content(genus_url)
+                    if genus_content:
+                        save_page(genus_url, "genus", genus_id, genus_content,
+                                order_name=order_name, family_name=family_name, genus_name=genus_name)
+                    time.sleep(random.uniform(1, 3))
 
                 # Step 7: Get list of species for this genus
                 logging.info(f"          Getting species for genus {genus_name}...")
@@ -380,12 +383,13 @@ def main():
                     logging.info(f"            Processing {spec_idx}/{len(species_list)}: Species {species_name}'s description ({species_url})")
 
                     # Step 8: Process species description page
-                    species_content = get_page_content(species_url)
-                    if species_content:
-                        save_page(species_url, "species", species_id, species_content,
-                                 order_name=order_name, family_name=family_name,
-                                 genus_name=genus_name, species_name=species_name)
-                    time.sleep(random.uniform(1, 3))
+                    if resume_species != species_name:
+                        species_content = get_page_content(species_url)
+                        if species_content:
+                            save_page(species_url, "species", species_id, species_content,
+                                    order_name=order_name, family_name=family_name,
+                                    genus_name=genus_name, species_name=species_name)
+                        time.sleep(random.uniform(1, 3))
 
                     # Step 9: Get list of subspecies for this species
                     # print(f"              Getting subspecies for species {species_name}...")
