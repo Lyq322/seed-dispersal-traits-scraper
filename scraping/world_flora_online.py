@@ -12,6 +12,8 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -52,13 +54,26 @@ logger.addHandler(main_file_handler)
 logger.addHandler(console_handler)
 logger.addHandler(error_file_handler)
 
-# Global session and file handles
-session = requests.Session()
-session.verify = False
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-})
+# Global file handles and locks
 jsonl_file = None
+file_write_lock = Lock()
+
+# Thread-local storage for sessions (each thread gets its own session)
+import threading
+thread_local = threading.local()
+
+def get_session():
+    """Get or create a thread-local session with retry adapter."""
+    if not hasattr(thread_local, 'session'):
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        thread_local.session = requests.Session()
+        thread_local.session.verify = False
+        thread_local.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    return thread_local.session
 
 
 def get_jsonl_file():
@@ -80,7 +95,7 @@ def close_jsonl_file():
 
 def get_page_content(url, max_retries=5):
     """Fetch page content with retries."""
-    global session
+    session = get_session()
     for attempt in range(max_retries):
         try:
             response = session.get(url, timeout=30)
@@ -103,7 +118,7 @@ def get_page_content(url, max_retries=5):
 
 def get_api_data(api_url, max_retries=5):
     """Fetch JSON data from API with retries."""
-    global session
+    session = get_session()
     for attempt in range(max_retries):
         try:
             response = session.get(api_url, timeout=30)
@@ -139,7 +154,7 @@ def extract_text_from_html(html_content):
 
 def save_page(url, page_type, identifier, html_content, order_name=None, family_name=None,
               genus_name=None, species_name=None, subspecies=None):
-    """Save raw HTML and text for a page as JSONL."""
+    """Save raw HTML and text for a page as JSONL (thread-safe)."""
     try:
         text_content = extract_text_from_html(html_content)
 
@@ -159,8 +174,10 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
         }
 
         jsonl_file = get_jsonl_file()
-        jsonl_file.write(json.dumps(page_data, ensure_ascii=False) + '\n')
-        jsonl_file.flush()
+        # Thread-safe write
+        with file_write_lock:
+            jsonl_file.write(json.dumps(page_data, ensure_ascii=False) + '\n')
+            jsonl_file.flush()
 
         return True
 
@@ -169,35 +186,42 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
         return False
 
 
-def get_last_processed_item():
-    """Read the last line from JSONL file to determine where to resume."""
+def get_processed_identifiers():
+    """Load all processed identifiers from JSONL file for resume functionality."""
     jsonl_path = OUTPUT_DIR / "world_flora_online.jsonl"
+    processed = {
+        'order': set(),
+        'family': set(),
+        'genus': set(),
+        'species': set()
+    }
+
     if not jsonl_path.exists():
-        return None
+        return processed
 
     try:
+        logging.info("Loading processed identifiers from JSONL file...")
         with open(jsonl_path, 'r', encoding='utf-8') as f:
-            # Read last line
-            lines = f.readlines()
-            if not lines:
-                return None
+            for line_num, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    page_type = data.get('page_type')
+                    identifier = data.get('identifier')
+                    if page_type and identifier:
+                        processed[page_type].add(identifier)
+                except json.JSONDecodeError:
+                    logging.warning(f"Skipping invalid JSON on line {line_num}")
 
-            last_line = lines[-1].strip()
-            if not last_line:
-                return None
-
-            data = json.loads(last_line)
-            return {
-                'order_name': data.get('order_name'),
-                'family_name': data.get('family_name'),
-                'genus_name': data.get('genus_name'),
-                'species_name': data.get('species_name'),
-                'page_type': data.get('page_type'),
-                'identifier': data.get('identifier')
-            }
+        total = sum(len(s) for s in processed.values())
+        logging.info(f"Loaded {total} processed identifiers (orders: {len(processed['order'])}, "
+                    f"families: {len(processed['family'])}, genera: {len(processed['genus'])}, "
+                    f"species: {len(processed['species'])})")
     except Exception as e:
-        logging.error(f"Error reading last processed item: {e}")
-        return None
+        logging.error(f"Error loading processed identifiers: {e}")
+
+    return processed
 
 
 def get_taxon_children(taxon_id):
@@ -224,29 +248,114 @@ def get_taxon_children(taxon_id):
     return children
 
 
+def process_family(family, order_name, order_id, processed, max_workers=5):
+    """Process a single family and all its genera/species."""
+    family_name = family['name']
+    family_url = family['url']
+    family_id = family['id']
+
+    # Skip if already processed
+    if family_id in processed['family']:
+        logging.info(f"    Skipping family {family_name} (already processed)")
+        return
+
+    logging.info(f"    Processing Family {family_name}'s description ({family_url})")
+
+    # Process family description page
+    family_content = get_page_content(family_url)
+    if family_content:
+        save_page(family_url, "family", family_id, family_content,
+                 order_name=order_name, family_name=family_name)
+    time.sleep(random.uniform(1, 3))
+
+    # Get list of genera for this family
+    genera = get_taxon_children(family_id)
+
+    # Process genera in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for genus in genera:
+            future = executor.submit(process_genus, genus, order_name, family_name, processed, max_workers)
+            futures.append(future)
+
+        # Wait for all genera to complete
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logging.error(f"Error processing genus: {e}")
+
+
+def process_genus(genus, order_name, family_name, processed, max_workers=5):
+    """Process a single genus and all its species."""
+    genus_name = genus['name']
+    genus_url = genus['url']
+    genus_id = genus['id']
+
+    # Skip if already processed
+    if genus_id in processed['genus']:
+        logging.info(f"        Skipping genus {genus_name} (already processed)")
+        return
+
+    logging.info(f"        Processing Genus {genus_name}'s description ({genus_url})")
+
+    # Process genus description page
+    genus_content = get_page_content(genus_url)
+    if genus_content:
+        save_page(genus_url, "genus", genus_id, genus_content,
+                 order_name=order_name, family_name=family_name, genus_name=genus_name)
+    time.sleep(random.uniform(1, 3))
+
+    # Get list of species for this genus
+    species_list = get_taxon_children(genus_id)
+
+    # Process species in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for species in species_list:
+            future = executor.submit(process_species, species, order_name, family_name, genus_name, processed)
+            futures.append(future)
+
+        # Wait for all species to complete
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logging.error(f"Error processing species: {e}")
+
+
+def process_species(species, order_name, family_name, genus_name, processed):
+    """Process a single species."""
+    species_name = species['name']
+    species_url = species['url']
+    species_id = species['id']
+
+    # Skip if already processed
+    if species_id in processed['species']:
+        logging.info(f"            Skipping species {species_name} (already processed)")
+        return
+
+    logging.info(f"            Processing Species {species_name}'s description ({species_url})")
+
+    # Process species description page
+    species_content = get_page_content(species_url)
+    if species_content:
+        save_page(species_url, "species", species_id, species_content,
+                 order_name=order_name, family_name=family_name,
+                 genus_name=genus_name, species_name=species_name)
+    time.sleep(random.uniform(1, 3))
+
+
 def main():
     """Main scraping function."""
     logging.info("Starting World Flora Online scraper...")
 
-    # Check for resume point
-    last_item = get_last_processed_item()
-    if last_item:
-        logging.info(f"\nResuming from last processed item:")
-        logging.info(f"  Type: {last_item.get('page_type')}")
-        logging.info(f"  Order: {last_item.get('order_name')}")
-        logging.info(f"  Family: {last_item.get('family_name')}")
-        logging.info(f"  Genus: {last_item.get('genus_name')}")
-        logging.info(f"  Species: {last_item.get('species_name')}")
-        resume_order = last_item.get('order_name')
-        resume_family = last_item.get('family_name')
-        resume_genus = last_item.get('genus_name')
-        resume_species = last_item.get('species_name')
+    # Load processed identifiers for resume functionality
+    processed = get_processed_identifiers()
+    if any(processed.values()):
+        logging.info(f"\nResuming: Found {sum(len(s) for s in processed.values())} already processed items")
     else:
         logging.info("\nNo previous progress found. Starting from beginning.")
-        resume_order = None
-        resume_family = None
-        resume_genus = None
-        resume_species = None
 
     # Step 1: Get list of orders
     logging.info("\n=== Step 1: Fetching orders ===")
@@ -269,8 +378,12 @@ def main():
                     'id': order_id
                 })
 
-    # Step 2: Process each order
-    skip_orders = resume_order is not None
+    logging.info(f"Found {len(orders)} orders")
+
+    # Configuration for multithreading
+    MAX_WORKERS = 5  # Number of parallel threads
+
+    # Step 2: Process each order sequentially (to maintain hierarchy)
     for order_idx, order in enumerate(orders, 1):
         order_name = order['name']
         order_url = order['url']
@@ -278,136 +391,34 @@ def main():
 
         logging.info(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
 
-        # Skip orders before resume point
-        if skip_orders:
-            if order_name != resume_order:
-                logging.info(f"  Skipping order {order_name} (already processed)")
-                continue
-            else:
-                logging.info(f"  Resuming from order {order_name}")
-                skip_orders = False
+        # Skip if already processed
+        if order_id in processed['order']:
+            logging.info(f"  Skipping order {order_name} (already processed)")
+            continue
 
         # Step 2: Process order description page
-        if resume_order != order_name:
-            order_content = get_page_content(order_url)
-            if order_content:
-                save_page(order_url, "order", order_id, order_content, order_name=order_name)
-            time.sleep(random.uniform(1, 3))
+        order_content = get_page_content(order_url)
+        if order_content:
+            save_page(order_url, "order", order_id, order_content, order_name=order_name)
+        time.sleep(random.uniform(1, 3))
 
         # Step 3: Get list of families for this order
         families = get_taxon_children(order_id)
+        logging.info(f"  Found {len(families)} families for order {order_name}")
 
-        # Step 4: Process each family
-        skip_families = resume_family is not None and order_name == resume_order
-        for fam_idx, family in enumerate(families, 1):
-            family_name = family['name']
-            family_url = family['url']
-            family_id = family['id']
+        # Step 4: Process families in parallel
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = []
+            for family in families:
+                future = executor.submit(process_family, family, order_name, order_id, processed, MAX_WORKERS)
+                futures.append(future)
 
-            # Skip families before resume point
-            if skip_families:
-                if family_name != resume_family:
-                    logging.info(f"    Skipping family {family_name} (already processed)")
-                    continue
-                else:
-                    logging.info(f"    Resuming from family {family_name}")
-                    skip_families = False
-
-            logging.info(f"    Processing {fam_idx}/{len(families)}: Family {family_name}'s description ({family_url})")
-
-            # Step 4: Process family description page
-            if resume_family != family_name:
-                family_content = get_page_content(family_url)
-                if family_content:
-                    save_page(family_url, "family", family_id, family_content,
-                            order_name=order_name, family_name=family_name)
-                time.sleep(random.uniform(1, 3))
-
-            # Step 5: Get list of genera for this family
-            genera = get_taxon_children(family_id)
-
-            # Step 6: Process each genus
-            skip_genera = resume_genus is not None and order_name == resume_order and family_name == resume_family
-            for gen_idx, genus in enumerate(genera, 1):
-                genus_name = genus['name']
-                genus_url = genus['url']
-                genus_id = genus['id']
-
-                # Skip genera before resume point
-                if skip_genera:
-                    if genus_name != resume_genus:
-                        logging.info(f"        Skipping genus {genus_name} (already processed)")
-                        continue
-                    else:
-                        logging.info(f"        Resuming from genus {genus_name}")
-                        skip_genera = False
-
-                logging.info(f"        Processing {gen_idx}/{len(genera)}: Genus {genus_name}'s description ({genus_url})")
-
-                # Step 6: Process genus description page
-                if resume_genus != genus_name:
-                    genus_content = get_page_content(genus_url)
-                    if genus_content:
-                        save_page(genus_url, "genus", genus_id, genus_content,
-                                order_name=order_name, family_name=family_name, genus_name=genus_name)
-                    time.sleep(random.uniform(1, 3))
-
-                # Step 7: Get list of species for this genus
-                species_list = get_taxon_children(genus_id)
-
-                # Step 8: Process each species
-                skip_species = (resume_species is not None and order_name == resume_order and
-                               family_name == resume_family and genus_name == resume_genus)
-                for spec_idx, species in enumerate(species_list, 1):
-                    species_name = species['name']
-                    species_url = species['url']
-                    species_id = species['id']
-
-                    # Skip species before resume point
-                    if skip_species:
-                        if species_name != resume_species:
-                            logging.info(f"            Skipping species {species_name} (already processed)")
-                            continue
-                        else:
-                            logging.info(f"            Resuming from species {species_name}")
-                            skip_species = False
-
-                    logging.info(f"            Processing {spec_idx}/{len(species_list)}: Species {species_name}'s description ({species_url})")
-
-                    # Step 8: Process species description page
-                    if resume_species != species_name:
-                        species_content = get_page_content(species_url)
-                        if species_content:
-                            save_page(species_url, "species", species_id, species_content,
-                                    order_name=order_name, family_name=family_name,
-                                    genus_name=genus_name, species_name=species_name)
-                        time.sleep(random.uniform(1, 3))
-
-                    # Step 9: Get list of subspecies for this species
-                    # subspecies_list = get_taxon_children(species_id)
-
-                    # Step 10: Process each subspecies
-                    # for subsp_idx, subspecies in enumerate(subspecies_list, 1):
-                    #     subspecies_name = subspecies['name']
-                    #     subspecies_url = subspecies['url']
-                    #     subspecies_id = subspecies['id']
-                    #
-                    #     print(f"                Processing {subsp_idx}/{len(subspecies_list)}: Subspecies {subspecies_name}'s description ({subspecies_url})")
-                    #
-                    #     # Step 10: Process subspecies description page
-                    #     subspecies_content = get_page_content(subspecies_url)
-                    #     if subspecies_content:
-                    #         save_page(subspecies_url, "subspecies", subspecies_id, subspecies_content,
-                    #                  order_name=order_name, family_name=family_name,
-                    #                  genus_name=genus_name, species_name=species_name,
-                    #                  subspecies=subspecies_name)
-                    #     time.sleep(random.uniform(1, 3))
-
-                    time.sleep(random.uniform(1, 2))
-
-                time.sleep(random.uniform(1, 2))
-
-            time.sleep(random.uniform(1, 2))
+            # Wait for all families to complete
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Error processing family: {e}")
 
         logging.info(f"\nCompleted Order {order_name}")
         time.sleep(random.uniform(2, 5))
