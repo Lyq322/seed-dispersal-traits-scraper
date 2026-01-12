@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import time
 import random
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 import urllib3
@@ -19,6 +20,37 @@ BASE_API_URL = "https://www.worldfloraonline.org/taxonTree"
 BASE_URL = "https://www.worldfloraonline.org"
 OUTPUT_DIR = Path("data/world_flora_online_raw")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Setup logging
+LOG_FILE = OUTPUT_DIR / "world_flora_online.log"
+ERROR_FILE = OUTPUT_DIR / "world_flora_online_errors.log"
+
+# Configure root logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Formatter for all handlers
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# Handler for main log file (all messages)
+main_file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+main_file_handler.setLevel(logging.INFO)
+main_file_handler.setFormatter(formatter)
+
+# Handler for console (all messages)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+
+# Handler for error file (ERROR level only)
+error_file_handler = logging.FileHandler(ERROR_FILE, encoding='utf-8')
+error_file_handler.setLevel(logging.ERROR)  # Only ERROR and above
+error_file_handler.setFormatter(formatter)
+
+# Add all handlers to root logger
+logger.addHandler(main_file_handler)
+logger.addHandler(console_handler)
+logger.addHandler(error_file_handler)
 
 # Global session and file handles
 session = requests.Session()
@@ -55,14 +87,14 @@ def get_page_content(url, max_retries=5):
             if response.status_code == 200:
                 return response.text
             elif response.status_code == 404:
-                print(f"404 Not Found: {url}")
+                logging.warning(f"404 Not Found: {url}")
                 return None
             else:
-                print(f"Status {response.status_code} for {url}, attempt {attempt + 1}")
+                logging.warning(f"Status {response.status_code} for {url}, attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
         except Exception as e:
-            print(f"Error fetching {url}, attempt {attempt + 1}: {e}")
+            logging.error(f"Error fetching {url}, attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(10)
 
@@ -78,14 +110,14 @@ def get_api_data(api_url, max_retries=5):
             if response.status_code == 200:
                 return response.json()
             elif response.status_code == 404:
-                print(f"404 Not Found: {api_url}")
+                logging.warning(f"404 Not Found: {api_url}")
                 return None
             else:
-                print(f"Status {response.status_code} for {api_url}, attempt {attempt + 1}")
+                logging.warning(f"Status {response.status_code} for {api_url}, attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
         except Exception as e:
-            print(f"Error fetching {api_url}, attempt {attempt + 1}: {e}")
+            logging.error(f"Error fetching {api_url}, attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(10)
 
@@ -133,7 +165,7 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
         return True
 
     except Exception as e:
-        print(f"Error saving {url}: {e}")
+        logging.error(f"Error saving {url}: {e}")
         return False
 
 
@@ -164,7 +196,7 @@ def get_last_processed_item():
                 'identifier': data.get('identifier')
             }
     except Exception as e:
-        print(f"Error reading last processed item: {e}")
+        logging.error(f"Error reading last processed item: {e}")
         return None
 
 
@@ -194,33 +226,33 @@ def get_taxon_children(taxon_id):
 
 def main():
     """Main scraping function."""
-    print("Starting World Flora Online scraper...")
+    logging.info("Starting World Flora Online scraper...")
 
     # Check for resume point
     last_item = get_last_processed_item()
     if last_item:
-        print(f"\nResuming from last processed item:")
-        print(f"  Type: {last_item.get('page_type')}")
-        print(f"  Order: {last_item.get('order_name')}")
-        print(f"  Family: {last_item.get('family_name')}")
-        print(f"  Genus: {last_item.get('genus_name')}")
-        print(f"  Species: {last_item.get('species_name')}")
+        logging.info(f"\nResuming from last processed item:")
+        logging.info(f"  Type: {last_item.get('page_type')}")
+        logging.info(f"  Order: {last_item.get('order_name')}")
+        logging.info(f"  Family: {last_item.get('family_name')}")
+        logging.info(f"  Genus: {last_item.get('genus_name')}")
+        logging.info(f"  Species: {last_item.get('species_name')}")
         resume_order = last_item.get('order_name')
         resume_family = last_item.get('family_name')
         resume_genus = last_item.get('genus_name')
         resume_species = last_item.get('species_name')
     else:
-        print("\nNo previous progress found. Starting from beginning.")
+        logging.info("\nNo previous progress found. Starting from beginning.")
         resume_order = None
         resume_family = None
         resume_genus = None
         resume_species = None
 
     # Step 1: Get list of orders
-    print("\n=== Step 1: Fetching orders ===")
+    logging.info("\n=== Step 1: Fetching orders ===")
     orders_data = get_api_data(BASE_API_URL)
     if not orders_data:
-        print("Failed to fetch orders")
+        logging.error("Failed to fetch orders")
         return
 
     orders = []
@@ -237,7 +269,7 @@ def main():
                     'id': order_id
                 })
 
-    print(f"Found {len(orders)} orders")
+    logging.info(f"Found {len(orders)} orders")
 
     # Step 2: Process each order
     skip_orders = resume_order is not None
@@ -246,15 +278,15 @@ def main():
         order_url = order['url']
         order_id = order['id']
 
-        print(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
+        logging.info(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
 
         # Skip orders before resume point
         if skip_orders:
             if order_name != resume_order:
-                print(f"  Skipping order {order_name} (already processed)")
+                logging.info(f"  Skipping order {order_name} (already processed)")
                 continue
             else:
-                print(f"  Resuming from order {order_name}")
+                logging.info(f"  Resuming from order {order_name}")
                 skip_orders = False
 
         # Step 2: Process order description page
@@ -264,9 +296,9 @@ def main():
         time.sleep(random.uniform(1, 3))
 
         # Step 3: Get list of families for this order
-        print(f"  Getting families for order {order_name}...")
+        logging.info(f"  Getting families for order {order_name}...")
         families = get_taxon_children(order_id)
-        print(f"  Found {len(families)} families")
+        logging.info(f"  Found {len(families)} families")
 
         # Step 4: Process each family
         skip_families = resume_family is not None and order_name == resume_order
@@ -278,13 +310,13 @@ def main():
             # Skip families before resume point
             if skip_families:
                 if family_name != resume_family:
-                    print(f"    Skipping family {family_name} (already processed)")
+                    logging.info(f"    Skipping family {family_name} (already processed)")
                     continue
                 else:
-                    print(f"    Resuming from family {family_name}")
+                    logging.info(f"    Resuming from family {family_name}")
                     skip_families = False
 
-            print(f"    Processing {fam_idx}/{len(families)}: Family {family_name}'s description ({family_url})")
+            logging.info(f"    Processing {fam_idx}/{len(families)}: Family {family_name}'s description ({family_url})")
 
             # Step 4: Process family description page
             family_content = get_page_content(family_url)
@@ -294,9 +326,9 @@ def main():
             time.sleep(random.uniform(1, 3))
 
             # Step 5: Get list of genera for this family
-            print(f"      Getting genera for family {family_name}...")
+            logging.info(f"      Getting genera for family {family_name}...")
             genera = get_taxon_children(family_id)
-            print(f"      Found {len(genera)} genera")
+            logging.info(f"      Found {len(genera)} genera")
 
             # Step 6: Process each genus
             skip_genera = resume_genus is not None and order_name == resume_order and family_name == resume_family
@@ -308,13 +340,13 @@ def main():
                 # Skip genera before resume point
                 if skip_genera:
                     if genus_name != resume_genus:
-                        print(f"        Skipping genus {genus_name} (already processed)")
+                        logging.info(f"        Skipping genus {genus_name} (already processed)")
                         continue
                     else:
-                        print(f"        Resuming from genus {genus_name}")
+                        logging.info(f"        Resuming from genus {genus_name}")
                         skip_genera = False
 
-                print(f"        Processing {gen_idx}/{len(genera)}: Genus {genus_name}'s description ({genus_url})")
+                logging.info(f"        Processing {gen_idx}/{len(genera)}: Genus {genus_name}'s description ({genus_url})")
 
                 # Step 6: Process genus description page
                 genus_content = get_page_content(genus_url)
@@ -324,9 +356,9 @@ def main():
                 time.sleep(random.uniform(1, 3))
 
                 # Step 7: Get list of species for this genus
-                print(f"          Getting species for genus {genus_name}...")
+                logging.info(f"          Getting species for genus {genus_name}...")
                 species_list = get_taxon_children(genus_id)
-                print(f"          Found {len(species_list)} species")
+                logging.info(f"          Found {len(species_list)} species")
 
                 # Step 8: Process each species
                 skip_species = (resume_species is not None and order_name == resume_order and
@@ -339,13 +371,13 @@ def main():
                     # Skip species before resume point
                     if skip_species:
                         if species_name != resume_species:
-                            print(f"            Skipping species {species_name} (already processed)")
+                            logging.info(f"            Skipping species {species_name} (already processed)")
                             continue
                         else:
-                            print(f"            Resuming from species {species_name}")
+                            logging.info(f"            Resuming from species {species_name}")
                             skip_species = False
 
-                    print(f"            Processing {spec_idx}/{len(species_list)}: Species {species_name}'s description ({species_url})")
+                    logging.info(f"            Processing {spec_idx}/{len(species_list)}: Species {species_name}'s description ({species_url})")
 
                     # Step 8: Process species description page
                     species_content = get_page_content(species_url)
@@ -383,12 +415,12 @@ def main():
 
             time.sleep(random.uniform(1, 2))
 
-        print(f"\nCompleted Order {order_name}")
+        logging.info(f"\nCompleted Order {order_name}")
         time.sleep(random.uniform(2, 5))
 
     # Close JSONL file
     close_jsonl_file()
-    print("\n=== Scraping completed ===")
+    logging.info("\n=== Scraping completed ===")
 
 
 if __name__ == "__main__":
