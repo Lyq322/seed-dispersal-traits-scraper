@@ -137,6 +137,37 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
         return False
 
 
+def get_last_processed_item():
+    """Read the last line from JSONL file to determine where to resume."""
+    jsonl_path = OUTPUT_DIR / "world_flora_online.jsonl"
+    if not jsonl_path.exists():
+        return None
+
+    try:
+        with open(jsonl_path, 'r', encoding='utf-8') as f:
+            # Read last line
+            lines = f.readlines()
+            if not lines:
+                return None
+
+            last_line = lines[-1].strip()
+            if not last_line:
+                return None
+
+            data = json.loads(last_line)
+            return {
+                'order_name': data.get('order_name'),
+                'family_name': data.get('family_name'),
+                'genus_name': data.get('genus_name'),
+                'species_name': data.get('species_name'),
+                'page_type': data.get('page_type'),
+                'identifier': data.get('identifier')
+            }
+    except Exception as e:
+        print(f"Error reading last processed item: {e}")
+        return None
+
+
 def get_taxon_children(taxon_id):
     """Get list of child taxa for a given taxon ID."""
     api_url = f"{BASE_API_URL}/{taxon_id}"
@@ -165,6 +196,26 @@ def main():
     """Main scraping function."""
     print("Starting World Flora Online scraper...")
 
+    # Check for resume point
+    last_item = get_last_processed_item()
+    if last_item:
+        print(f"\nResuming from last processed item:")
+        print(f"  Type: {last_item.get('page_type')}")
+        print(f"  Order: {last_item.get('order_name')}")
+        print(f"  Family: {last_item.get('family_name')}")
+        print(f"  Genus: {last_item.get('genus_name')}")
+        print(f"  Species: {last_item.get('species_name')}")
+        resume_order = last_item.get('order_name')
+        resume_family = last_item.get('family_name')
+        resume_genus = last_item.get('genus_name')
+        resume_species = last_item.get('species_name')
+    else:
+        print("\nNo previous progress found. Starting from beginning.")
+        resume_order = None
+        resume_family = None
+        resume_genus = None
+        resume_species = None
+
     # Step 1: Get list of orders
     print("\n=== Step 1: Fetching orders ===")
     orders_data = get_api_data(BASE_API_URL)
@@ -189,12 +240,22 @@ def main():
     print(f"Found {len(orders)} orders")
 
     # Step 2: Process each order
+    skip_orders = resume_order is not None
     for order_idx, order in enumerate(orders, 1):
         order_name = order['name']
         order_url = order['url']
         order_id = order['id']
 
         print(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
+
+        # Skip orders before resume point
+        if skip_orders:
+            if order_name != resume_order:
+                print(f"  Skipping order {order_name} (already processed)")
+                continue
+            else:
+                print(f"  Resuming from order {order_name}")
+                skip_orders = False
 
         # Step 2: Process order description page
         order_content = get_page_content(order_url)
@@ -208,10 +269,20 @@ def main():
         print(f"  Found {len(families)} families")
 
         # Step 4: Process each family
+        skip_families = resume_family is not None and order_name == resume_order
         for fam_idx, family in enumerate(families, 1):
             family_name = family['name']
             family_url = family['url']
             family_id = family['id']
+
+            # Skip families before resume point
+            if skip_families:
+                if family_name != resume_family:
+                    print(f"    Skipping family {family_name} (already processed)")
+                    continue
+                else:
+                    print(f"    Resuming from family {family_name}")
+                    skip_families = False
 
             print(f"    Processing {fam_idx}/{len(families)}: Family {family_name}'s description ({family_url})")
 
@@ -228,10 +299,20 @@ def main():
             print(f"      Found {len(genera)} genera")
 
             # Step 6: Process each genus
+            skip_genera = resume_genus is not None and order_name == resume_order and family_name == resume_family
             for gen_idx, genus in enumerate(genera, 1):
                 genus_name = genus['name']
                 genus_url = genus['url']
                 genus_id = genus['id']
+
+                # Skip genera before resume point
+                if skip_genera:
+                    if genus_name != resume_genus:
+                        print(f"        Skipping genus {genus_name} (already processed)")
+                        continue
+                    else:
+                        print(f"        Resuming from genus {genus_name}")
+                        skip_genera = False
 
                 print(f"        Processing {gen_idx}/{len(genera)}: Genus {genus_name}'s description ({genus_url})")
 
@@ -248,10 +329,21 @@ def main():
                 print(f"          Found {len(species_list)} species")
 
                 # Step 8: Process each species
+                skip_species = (resume_species is not None and order_name == resume_order and
+                               family_name == resume_family and genus_name == resume_genus)
                 for spec_idx, species in enumerate(species_list, 1):
                     species_name = species['name']
                     species_url = species['url']
                     species_id = species['id']
+
+                    # Skip species before resume point
+                    if skip_species:
+                        if species_name != resume_species:
+                            print(f"            Skipping species {species_name} (already processed)")
+                            continue
+                        else:
+                            print(f"            Resuming from species {species_name}")
+                            skip_species = False
 
                     print(f"            Processing {spec_idx}/{len(species_list)}: Species {species_name}'s description ({species_url})")
 
@@ -264,26 +356,26 @@ def main():
                     time.sleep(random.uniform(1, 3))
 
                     # Step 9: Get list of subspecies for this species
-                    print(f"              Getting subspecies for species {species_name}...")
-                    subspecies_list = get_taxon_children(species_id)
-                    print(f"              Found {len(subspecies_list)} subspecies")
+                    # print(f"              Getting subspecies for species {species_name}...")
+                    # subspecies_list = get_taxon_children(species_id)
+                    # print(f"              Found {len(subspecies_list)} subspecies")
 
                     # Step 10: Process each subspecies
-                    for subsp_idx, subspecies in enumerate(subspecies_list, 1):
-                        subspecies_name = subspecies['name']
-                        subspecies_url = subspecies['url']
-                        subspecies_id = subspecies['id']
-
-                        print(f"                Processing {subsp_idx}/{len(subspecies_list)}: Subspecies {subspecies_name}'s description ({subspecies_url})")
-
-                        # Step 10: Process subspecies description page
-                        subspecies_content = get_page_content(subspecies_url)
-                        if subspecies_content:
-                            save_page(subspecies_url, "subspecies", subspecies_id, subspecies_content,
-                                     order_name=order_name, family_name=family_name,
-                                     genus_name=genus_name, species_name=species_name,
-                                     subspecies=subspecies_name)
-                        time.sleep(random.uniform(1, 3))
+                    # for subsp_idx, subspecies in enumerate(subspecies_list, 1):
+                    #     subspecies_name = subspecies['name']
+                    #     subspecies_url = subspecies['url']
+                    #     subspecies_id = subspecies['id']
+                    #
+                    #     print(f"                Processing {subsp_idx}/{len(subspecies_list)}: Subspecies {subspecies_name}'s description ({subspecies_url})")
+                    #
+                    #     # Step 10: Process subspecies description page
+                    #     subspecies_content = get_page_content(subspecies_url)
+                    #     if subspecies_content:
+                    #         save_page(subspecies_url, "subspecies", subspecies_id, subspecies_content,
+                    #                  order_name=order_name, family_name=family_name,
+                    #                  genus_name=genus_name, species_name=species_name,
+                    #                  subspecies=subspecies_name)
+                    #     time.sleep(random.uniform(1, 3))
 
                     time.sleep(random.uniform(1, 2))
 
