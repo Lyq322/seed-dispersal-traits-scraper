@@ -269,8 +269,6 @@ def main():
                     'id': order_id
                 })
 
-    logging.info(f"Found {len(orders)} orders")
-
     # Step 2: Process each order
     skip_orders = resume_order is not None
     for order_idx, order in enumerate(orders, 1):
@@ -297,9 +295,7 @@ def main():
             time.sleep(random.uniform(1, 3))
 
         # Step 3: Get list of families for this order
-        logging.info(f"  Getting families for order {order_name}...")
         families = get_taxon_children(order_id)
-        logging.info(f"  Found {len(families)} families")
 
         # Step 4: Process each family
         skip_families = resume_family is not None and order_name == resume_order
@@ -328,9 +324,7 @@ def main():
                 time.sleep(random.uniform(1, 3))
 
             # Step 5: Get list of genera for this family
-            logging.info(f"      Getting genera for family {family_name}...")
             genera = get_taxon_children(family_id)
-            logging.info(f"      Found {len(genera)} genera")
 
             # Step 6: Process each genus
             skip_genera = resume_genus is not None and order_name == resume_order and family_name == resume_family
@@ -359,9 +353,7 @@ def main():
                     time.sleep(random.uniform(1, 3))
 
                 # Step 7: Get list of species for this genus
-                logging.info(f"          Getting species for genus {genus_name}...")
                 species_list = get_taxon_children(genus_id)
-                logging.info(f"          Found {len(species_list)} species")
 
                 # Step 8: Process each species
                 skip_species = (resume_species is not None and order_name == resume_order and
@@ -392,9 +384,7 @@ def main():
                         time.sleep(random.uniform(1, 3))
 
                     # Step 9: Get list of subspecies for this species
-                    # print(f"              Getting subspecies for species {species_name}...")
                     # subspecies_list = get_taxon_children(species_id)
-                    # print(f"              Found {len(subspecies_list)} subspecies")
 
                     # Step 10: Process each subspecies
                     # for subsp_idx, subspecies in enumerate(subspecies_list, 1):
