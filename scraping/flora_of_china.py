@@ -16,8 +16,14 @@ from pathlib import Path
 
 # Global configuration
 BASE_URL = "http://www.efloras.org/flora_page.aspx?flora_id=2"
-OUTPUT_DIR = Path("data/flora_of_china_raw")
+OUTPUT_DIR = Path("data/raw")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Hardcoded starting point to avoid duplicates
+STARTING_VOLUME_NUMBER = 24  # FOC Vol. 24
+STARTING_FAMILY = "Liliaceae"
+STARTING_GENUS = "Aspidistra"
+STARTING_SPECIES = "Aspidistra cyathiflora"
 
 # Global session and file handles
 session = requests.Session()
@@ -276,11 +282,21 @@ def main():
     volume_links = extract_links(base_content, volume_pattern, "http://www.efloras.org/", return_text=True)[1:]
 
     print(f"Found {len(volume_links)} volumes")
+    if STARTING_VOLUME_NUMBER:
+        print(f"Starting from volume_number: {STARTING_VOLUME_NUMBER}, family: {STARTING_FAMILY}, genus: {STARTING_GENUS}, species: {STARTING_SPECIES}")
+    else:
+        print("Starting from the first volume")
 
     # Step 3: Process each volume
     for volume_url, volume_text in volume_links:
-        print(f"\n=== Processing {volume_text} ({volume_url}) ===")
+        volume_number = int(volume_text.split(' ')[1])
 
+        # Skip volumes before starting volume
+        if STARTING_VOLUME_NUMBER and volume_number < STARTING_VOLUME_NUMBER:
+            print(f"Skipping {volume_text} (volume_number: {volume_number})")
+            continue
+
+        print(f"\n=== Processing {volume_text} ({volume_url}) ===")
         volume_id = extract_id_from_url(volume_url, 'volume_id')
         if not volume_id:
             print(f"Could not extract volume_id from {volume_url}")
@@ -297,22 +313,36 @@ def main():
         genus_list_urls = extract_links(volume_content, genus_list_pattern, "http://www.efloras.org/", container_id="ucFloraTaxonList_panelTaxonList")
         print(f"      Found {len(family_desc_links)} family descriptions and {len(genus_list_urls)} genus lists")
 
-        # Step 4: Process each family description page
-        for fam_idx, (family_desc_url, family_text) in enumerate(family_desc_links, 1):
-            family_name = family_text
-            print(f"    Processing {fam_idx}/{len(family_desc_links)}: Family {family_name}'s description ({family_desc_url})")
+        # Only process family descriptions if family's genus list processing has not started yet
+        if not (STARTING_GENUS and STARTING_VOLUME_NUMBER == volume_number):
+            # Step 4: Process each family description page
+            for fam_idx, (family_desc_url, family_text) in enumerate(family_desc_links, 1):
+                family_name = family_text
 
-            family_id = extract_id_from_url(family_desc_url, 'taxon_id')
-            family_content = get_page_content(family_desc_url)
-            if family_content:
-                save_page(family_desc_url, "family", f"family_{family_id}", family_content,
-                         family_name=family_name)
+                # Skip families before starting family in starting volume
+                if STARTING_FAMILY and family_name < STARTING_FAMILY and volume_number == STARTING_VOLUME_NUMBER:
+                    print(f"    Skipping family {family_name} (before {STARTING_FAMILY})")
+                    continue
 
-            time.sleep(random.uniform(1, 3))
+                print(f"    Processing {fam_idx}/{len(family_desc_links)}: Family {family_name}'s description ({family_desc_url})")
+
+                family_id = extract_id_from_url(family_desc_url, 'taxon_id')
+                family_content = get_page_content(family_desc_url)
+                if family_content:
+                    save_page(family_desc_url, "family", f"family_{family_id}", family_content,
+                            family_name=family_name)
+
+                time.sleep(random.uniform(1, 3))
 
         # Step 5: Process each family's genus list page
         for gen_list_idx, genus_list_url in enumerate(genus_list_urls, 1):
             family_name = extract_taxon_name(get_page_content(genus_list_url))
+
+            # Skip genus lists before starting genus in starting family in starting volume
+            if volume_number == STARTING_VOLUME_NUMBER and STARTING_GENUS and STARTING_FAMILY and family_name < STARTING_FAMILY:
+                print(f"    Skipping genus list for family {family_name} (before {STARTING_FAMILY})")
+                continue
+
             print(f"    Processing {gen_list_idx}/{len(genus_list_urls)}: Family {family_name}'s genus list ({genus_list_url})")
 
             # Extract genus description links from all pages (florataxon.aspx format)
@@ -326,26 +356,40 @@ def main():
 
             print(f"      Found {len(genus_desc_links)} genus descriptions and {len(species_list_urls)} species lists")
 
-            # Step 6: Process each genus description page
-            for gen_desc_idx, (genus_desc_url, genus_text) in enumerate(genus_desc_links, 1):
-                genus_name = genus_text
-                print(f"        Processing {gen_desc_idx}/{len(genus_desc_links)}: Genus {genus_name}'s description ({genus_desc_url})")
+            # Only process genus descriptions if genus's species list processing has not started yet
+            if not (STARTING_VOLUME_NUMBER == volume_number and STARTING_FAMILY == family_name and STARTING_SPECIES):
+                # Step 6: Process each genus description page
+                for gen_desc_idx, (genus_desc_url, genus_text) in enumerate(genus_desc_links, 1):
+                    genus_name = genus_text
 
-                genus_id = extract_id_from_url(genus_desc_url, 'taxon_id')
-                if not genus_id:
-                    continue
+                    # Skip genera before starting genus in starting family
+                    if volume_number == STARTING_VOLUME_NUMBER and STARTING_FAMILY == family_name and STARTING_GENUS and genus_name < STARTING_GENUS:
+                        print(f"        Skipping genus {genus_name} (before {STARTING_GENUS})")
+                        continue
 
-                genus_desc_content = get_page_content(genus_desc_url)
-                if genus_desc_content:
-                    genus_name = extract_taxon_name(genus_desc_content)
-                    save_page(genus_desc_url, "genus", f"genus_{genus_id}", genus_desc_content,
-                             family_name=family_name, genus_name=genus_name)
+                    print(f"        Processing {gen_desc_idx}/{len(genus_desc_links)}: Genus {genus_name}'s description ({genus_desc_url})")
 
-                time.sleep(random.uniform(1, 3))
+                    genus_id = extract_id_from_url(genus_desc_url, 'taxon_id')
+                    if not genus_id:
+                        continue
+
+                    genus_desc_content = get_page_content(genus_desc_url)
+                    if genus_desc_content:
+                        genus_name = extract_taxon_name(genus_desc_content)
+                        save_page(genus_desc_url, "genus", f"genus_{genus_id}", genus_desc_content,
+                                family_name=family_name, genus_name=genus_name)
+
+                    time.sleep(random.uniform(1, 3))
 
             # Step 7: Process each species list page
             for spec_list_idx, species_list_url in enumerate(species_list_urls, 1):
                 genus_name = extract_taxon_name(get_page_content(species_list_url))
+
+                # Skip genera before starting genus in starting family
+                if volume_number == STARTING_VOLUME_NUMBER and family_name == STARTING_FAMILY and STARTING_GENUS and genus_name < STARTING_GENUS and STARTING_SPECIES:
+                    print(f"        Skipping species list for genus {genus_name} (before {STARTING_GENUS})")
+                    continue
+
                 print(f"        Processing {spec_list_idx}/{len(species_list_urls)}: Genus {genus_name}'s species list ({species_list_url})")
 
                 # Extract species description links from all pages (florataxon.aspx format)
@@ -356,6 +400,12 @@ def main():
                 # Step 8: Process each species description page
                 for spec_desc_idx, (species_desc_url, species_text) in enumerate(species_desc_links, 1):
                     species_name = species_text
+
+                    # Skip species before starting species in starting genus
+                    if STARTING_VOLUME_NUMBER == volume_number and STARTING_FAMILY == family_name and STARTING_GENUS == genus_name and STARTING_SPECIES and species_name < STARTING_SPECIES:
+                        print(f"            Skipping species {species_name} (before {STARTING_SPECIES})")
+                        continue
+
                     print(f"            Processing {spec_desc_idx}/{len(species_desc_links)}: Species {species_name}'s description ({species_desc_url})")
 
                     species_id = extract_id_from_url(species_desc_url, 'taxon_id')
