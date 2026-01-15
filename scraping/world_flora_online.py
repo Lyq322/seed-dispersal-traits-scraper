@@ -322,10 +322,10 @@ def process_family(family, order_name, order_id, completed, max_workers=5):
     # Get list of genera for this family
     genera = get_taxon_children(family_id)
 
-    # Process genera in parallel
+    # Process genera in parallel (in reverse order)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
-        for genus in genera:
+        for genus in reversed(genera):
             future = executor.submit(process_genus, genus, order_name, family_name, completed, max_workers)
             futures.append(future)
 
@@ -378,10 +378,10 @@ def process_genus(genus, order_name, family_name, completed, max_workers=5):
     # Get list of species for this genus
     species_list = get_taxon_children(genus_id)
 
-    # Process species in parallel
+    # Process species in parallel (in reverse order)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
-        for species in species_list:
+        for species in reversed(species_list):
             future = executor.submit(process_species, species, order_name, family_name, genus_name, completed)
             futures.append(future)
 
@@ -477,13 +477,13 @@ def main():
     # Configuration for multithreading
     MAX_WORKERS = 3  # Number of parallel threads
 
-    # Step 2: Process each order sequentially (to maintain hierarchy)
-    for order_idx, order in enumerate(orders, 1):
+    # Step 2: Process each order sequentially (to maintain hierarchy) - in reverse order
+    for order_idx, order in enumerate(reversed(orders), 1):
         order_name = order['name']
         order_url = order['url']
         order_id = order['id']
 
-        logging.info(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
+        logging.info(f"\n=== Processing {len(orders) - order_idx + 1}/{len(orders)}: Order {order_name} ({order_url}) ===")
 
         # Skip if already completed
         if order_id in completed['order']:
@@ -505,10 +505,10 @@ def main():
         families = get_taxon_children(order_id)
         logging.info(f"  Found {len(families)} families for order {order_name}")
 
-        # Step 4: Process families in parallel
+        # Step 4: Process families in parallel (in reverse order)
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
-            for family in families:
+            for family in reversed(families):
                 future = executor.submit(process_family, family, order_name, order_id, completed, MAX_WORKERS)
                 futures.append(future)
 
