@@ -15,17 +15,20 @@ from pathlib import Path
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib3
+import ssl
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Global configuration
 BASE_API_URL = "https://www.worldfloraonline.org/taxonTree"
 BASE_URL = "https://www.worldfloraonline.org"
-OUTPUT_DIR = Path("data/world_flora_online_raw")
+OUTPUT_DIR = Path("data/raw")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR = Path("logs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Setup logging
-LOG_FILE = OUTPUT_DIR / "world_flora_online.log"
-ERROR_FILE = OUTPUT_DIR / "world_flora_online_errors.log"
+LOG_FILE = LOG_DIR / "world_flora_online.log"
+ERROR_FILE = LOG_DIR / "world_flora_online_errors.log"
 
 # Configure root logger
 logger = logging.getLogger()
@@ -57,6 +60,9 @@ logger.addHandler(error_file_handler)
 # Global file handles and locks
 jsonl_file = None
 file_write_lock = Lock()
+completion_file_lock = Lock()  # Lock for thread-safe writes to completion file
+completed_lock = Lock()  # Lock for thread-safe access to completed sets
+COMPLETION_FILE = OUTPUT_DIR / "completed_items.jsonl"
 
 # Thread-local storage for sessions (each thread gets its own session)
 import threading
@@ -108,10 +114,22 @@ def get_page_content(url, max_retries=5):
                 logging.warning(f"Status {response.status_code} for {url}, attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
+        except (ssl.SSLEOFError, requests.exceptions.SSLError) as e:
+            # Check if it's an SSLEOFError specifically
+            error_str = str(e)
+            if 'SSLEOFError' in error_str or 'UNEXPECTED_EOF_WHILE_READING' in error_str:
+                logging.error(f"SSLEOFError fetching {url}, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    logging.info(f"Sleeping for 3 minutes before retry...")
+                    time.sleep(180)  # 3 minutes = 180 seconds
+            else:
+                logging.error(f"SSL error fetching {url}, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(10)
         except Exception as e:
             logging.error(f"Error fetching {url}, attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(10)
+                time.sleep(3)
 
     return None
 
@@ -131,10 +149,22 @@ def get_api_data(api_url, max_retries=5):
                 logging.warning(f"Status {response.status_code} for {api_url}, attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(10)
+        except (ssl.SSLEOFError, requests.exceptions.SSLError) as e:
+            # Check if it's an SSLEOFError specifically
+            error_str = str(e)
+            if 'SSLEOFError' in error_str or 'UNEXPECTED_EOF_WHILE_READING' in error_str:
+                logging.error(f"SSLEOFError fetching {api_url}, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    logging.info(f"Sleeping for 3 minutes before retry...")
+                    time.sleep(180)  # 3 minutes = 180 seconds
+            else:
+                logging.error(f"SSL error fetching {api_url}, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(10)
         except Exception as e:
             logging.error(f"Error fetching {api_url}, attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(10)
+                time.sleep(3)
 
     return None
 
@@ -186,22 +216,21 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
         return False
 
 
-def get_processed_identifiers():
-    """Load all processed identifiers from JSONL file for resume functionality."""
-    jsonl_path = OUTPUT_DIR / "world_flora_online.jsonl"
-    processed = {
+def load_completed_items():
+    """Load fully completed items from completion file."""
+    completed = {
         'order': set(),
         'family': set(),
         'genus': set(),
         'species': set()
     }
 
-    if not jsonl_path.exists():
-        return processed
+    if not COMPLETION_FILE.exists():
+        return completed
 
     try:
-        logging.info("Loading processed identifiers from JSONL file...")
-        with open(jsonl_path, 'r', encoding='utf-8') as f:
+        logging.info("Loading completed items from completion file...")
+        with open(COMPLETION_FILE, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 if not line.strip():
                     continue
@@ -210,18 +239,34 @@ def get_processed_identifiers():
                     page_type = data.get('page_type')
                     identifier = data.get('identifier')
                     if page_type and identifier:
-                        processed[page_type].add(identifier)
+                        completed[page_type].add(identifier)
                 except json.JSONDecodeError:
-                    logging.warning(f"Skipping invalid JSON on line {line_num}")
+                    logging.warning(f"Skipping invalid JSON on line {line_num} in completion file")
 
-        total = sum(len(s) for s in processed.values())
-        logging.info(f"Loaded {total} processed identifiers (orders: {len(processed['order'])}, "
-                    f"families: {len(processed['family'])}, genera: {len(processed['genus'])}, "
-                    f"species: {len(processed['species'])})")
+        total = sum(len(s) for s in completed.values())
+        logging.info(f"Loaded {total} completed items (orders: {len(completed['order'])}, "
+                    f"families: {len(completed['family'])}, genera: {len(completed['genus'])}, "
+                    f"species: {len(completed['species'])})")
     except Exception as e:
-        logging.error(f"Error loading processed identifiers: {e}")
+        logging.error(f"Error loading completed items: {e}")
 
-    return processed
+    return completed
+
+
+def mark_item_completed(page_type, identifier):
+    """Thread-safe function to mark an item as fully completed."""
+    with completion_file_lock:
+        try:
+            with open(COMPLETION_FILE, 'a', encoding='utf-8') as f:
+                completion_data = {
+                    'page_type': page_type,
+                    'identifier': identifier,
+                    'timestamp': datetime.now().isoformat()
+                }
+                f.write(json.dumps(completion_data, ensure_ascii=False) + '\n')
+                f.flush()
+        except Exception as e:
+            logging.error(f"Error writing to completion file: {e}")
 
 
 def get_taxon_children(taxon_id):
@@ -248,25 +293,31 @@ def get_taxon_children(taxon_id):
     return children
 
 
-def process_family(family, order_name, order_id, processed, max_workers=5):
+def process_family(family, order_name, order_id, completed, max_workers=5):
     """Process a single family and all its genera/species."""
     family_name = family['name']
     family_url = family['url']
     family_id = family['id']
 
-    # Skip if already processed
-    if family_id in processed['family']:
-        logging.info(f"    Skipping family {family_name} (already processed)")
-        return
+    # Thread-safe check if already completed
+    with completed_lock:
+        if family_id in completed['family']:
+            logging.info(f"    Skipping family {family_name} (already completed)")
+            return
 
     logging.info(f"    Processing Family {family_name}'s description ({family_url})")
 
     # Process family description page
     family_content = get_page_content(family_url)
+    family_saved = False
     if family_content:
-        save_page(family_url, "family", family_id, family_content,
-                 order_name=order_name, family_name=family_name)
-    time.sleep(random.uniform(1, 3))
+        family_saved = save_page(family_url, "family", family_id, family_content,
+                                order_name=order_name, family_name=family_name)
+        if not family_saved:
+            logging.error(f"    Failed to save family {family_name} - will not mark as completed")
+    else:
+        logging.error(f"    Failed to fetch family {family_name} - will not mark as completed")
+    time.sleep(random.uniform(1, 2))
 
     # Get list of genera for this family
     genera = get_taxon_children(family_id)
@@ -275,7 +326,7 @@ def process_family(family, order_name, order_id, processed, max_workers=5):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for genus in genera:
-            future = executor.submit(process_genus, genus, order_name, family_name, processed, max_workers)
+            future = executor.submit(process_genus, genus, order_name, family_name, completed, max_workers)
             futures.append(future)
 
         # Wait for all genera to complete
@@ -285,25 +336,43 @@ def process_family(family, order_name, order_id, processed, max_workers=5):
             except Exception as e:
                 logging.error(f"Error processing genus: {e}")
 
+    # Only mark as completed if page was saved AND all genera are completed
+    with completed_lock:
+        all_genera_completed = all(genus['id'] in completed['genus'] for genus in genera)
+        if family_saved and all_genera_completed:
+            mark_item_completed('family', family_id)
+            completed['family'].add(family_id)
+            logging.info(f"    Completed family {family_name} (all genera processed)")
+        elif not family_saved:
+            logging.warning(f"    Family {family_name} not marked as completed (page not saved)")
+        elif not all_genera_completed:
+            logging.warning(f"    Family {family_name} not marked as completed (some genera incomplete)")
 
-def process_genus(genus, order_name, family_name, processed, max_workers=5):
+
+def process_genus(genus, order_name, family_name, completed, max_workers=5):
     """Process a single genus and all its species."""
     genus_name = genus['name']
     genus_url = genus['url']
     genus_id = genus['id']
 
-    # Skip if already processed
-    if genus_id in processed['genus']:
-        logging.info(f"        Skipping genus {genus_name} (already processed)")
-        return
+    # Thread-safe check if already completed
+    with completed_lock:
+        if genus_id in completed['genus']:
+            logging.info(f"        Skipping genus {genus_name} (already completed)")
+            return
 
     logging.info(f"        Processing Genus {genus_name}'s description ({genus_url})")
 
     # Process genus description page
     genus_content = get_page_content(genus_url)
+    genus_saved = False
     if genus_content:
-        save_page(genus_url, "genus", genus_id, genus_content,
-                 order_name=order_name, family_name=family_name, genus_name=genus_name)
+        genus_saved = save_page(genus_url, "genus", genus_id, genus_content,
+                               order_name=order_name, family_name=family_name, genus_name=genus_name)
+        if not genus_saved:
+            logging.error(f"        Failed to save genus {genus_name} - will not mark as completed")
+    else:
+        logging.error(f"        Failed to fetch genus {genus_name} - will not mark as completed")
     time.sleep(random.uniform(1, 3))
 
     # Get list of species for this genus
@@ -313,7 +382,7 @@ def process_genus(genus, order_name, family_name, processed, max_workers=5):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for species in species_list:
-            future = executor.submit(process_species, species, order_name, family_name, genus_name, processed)
+            future = executor.submit(process_species, species, order_name, family_name, genus_name, completed)
             futures.append(future)
 
         # Wait for all species to complete
@@ -323,26 +392,51 @@ def process_genus(genus, order_name, family_name, processed, max_workers=5):
             except Exception as e:
                 logging.error(f"Error processing species: {e}")
 
+    # Only mark as completed if page was saved AND all species are completed
+    with completed_lock:
+        all_species_completed = all(species['id'] in completed['species'] for species in species_list)
+        if genus_saved and all_species_completed:
+            mark_item_completed('genus', genus_id)
+            completed['genus'].add(genus_id)
+            logging.info(f"        Completed genus {genus_name} (all species processed)")
+        elif not genus_saved:
+            logging.warning(f"        Genus {genus_name} not marked as completed (page not saved)")
+        elif not all_species_completed:
+            logging.warning(f"        Genus {genus_name} not marked as completed (some species incomplete)")
 
-def process_species(species, order_name, family_name, genus_name, processed):
+
+def process_species(species, order_name, family_name, genus_name, completed):
     """Process a single species."""
     species_name = species['name']
     species_url = species['url']
     species_id = species['id']
 
-    # Skip if already processed
-    if species_id in processed['species']:
-        logging.info(f"            Skipping species {species_name} (already processed)")
-        return
+    # Thread-safe check if already completed
+    with completed_lock:
+        if species_id in completed['species']:
+            logging.info(f"            Skipping species {species_name} (already completed)")
+            return
 
     logging.info(f"            Processing Species {species_name}'s description ({species_url})")
 
     # Process species description page
     species_content = get_page_content(species_url)
+    species_saved = False
     if species_content:
-        save_page(species_url, "species", species_id, species_content,
-                 order_name=order_name, family_name=family_name,
-                 genus_name=genus_name, species_name=species_name)
+        species_saved = save_page(species_url, "species", species_id, species_content,
+                                  order_name=order_name, family_name=family_name,
+                                  genus_name=genus_name, species_name=species_name)
+    else:
+        logging.error(f"            Failed to fetch species {species_name} - will not mark as completed")
+
+    # Species are leaf nodes, only mark as completed if page was successfully saved
+    if species_saved:
+        mark_item_completed('species', species_id)
+        with completed_lock:
+            completed['species'].add(species_id)
+    else:
+        logging.error(f"            Failed to save species {species_name} - will not mark as completed")
+
     time.sleep(random.uniform(1, 3))
 
 
@@ -350,10 +444,10 @@ def main():
     """Main scraping function."""
     logging.info("Starting World Flora Online scraper...")
 
-    # Load processed identifiers for resume functionality
-    processed = get_processed_identifiers()
-    if any(processed.values()):
-        logging.info(f"\nResuming: Found {sum(len(s) for s in processed.values())} already processed items")
+    # Load completed items from completion file
+    completed = load_completed_items()
+    if any(completed.values()):
+        logging.info(f"\nResuming: Found {sum(len(s) for s in completed.values())} already completed items")
     else:
         logging.info("\nNo previous progress found. Starting from beginning.")
 
@@ -381,7 +475,7 @@ def main():
     logging.info(f"Found {len(orders)} orders")
 
     # Configuration for multithreading
-    MAX_WORKERS = 5  # Number of parallel threads
+    MAX_WORKERS = 3  # Number of parallel threads
 
     # Step 2: Process each order sequentially (to maintain hierarchy)
     for order_idx, order in enumerate(orders, 1):
@@ -391,15 +485,20 @@ def main():
 
         logging.info(f"\n=== Processing {order_idx}/{len(orders)}: Order {order_name} ({order_url}) ===")
 
-        # Skip if already processed
-        if order_id in processed['order']:
-            logging.info(f"  Skipping order {order_name} (already processed)")
+        # Skip if already completed
+        if order_id in completed['order']:
+            logging.info(f"  Skipping order {order_name} (already completed)")
             continue
 
         # Step 2: Process order description page
         order_content = get_page_content(order_url)
+        order_saved = False
         if order_content:
-            save_page(order_url, "order", order_id, order_content, order_name=order_name)
+            order_saved = save_page(order_url, "order", order_id, order_content, order_name=order_name)
+            if not order_saved:
+                logging.error(f"  Failed to save order {order_name} - will not mark as completed")
+        else:
+            logging.error(f"  Failed to fetch order {order_name} - will not mark as completed")
         time.sleep(random.uniform(1, 3))
 
         # Step 3: Get list of families for this order
@@ -410,7 +509,7 @@ def main():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             for family in families:
-                future = executor.submit(process_family, family, order_name, order_id, processed, MAX_WORKERS)
+                future = executor.submit(process_family, family, order_name, order_id, completed, MAX_WORKERS)
                 futures.append(future)
 
             # Wait for all families to complete
@@ -420,7 +519,18 @@ def main():
                 except Exception as e:
                     logging.error(f"Error processing family: {e}")
 
-        logging.info(f"\nCompleted Order {order_name}")
+        # Only mark as completed if page was saved AND all families are completed
+        all_families_completed = all(family['id'] in completed['family'] for family in families)
+        if order_saved and all_families_completed:
+            mark_item_completed('order', order_id)
+            with completed_lock:
+                completed['order'].add(order_id)
+            logging.info(f"\nCompleted Order {order_name} (all families processed)")
+        elif not order_saved:
+            logging.warning(f"\nOrder {order_name} not marked as completed (page not saved)")
+        elif not all_families_completed:
+            logging.warning(f"\nOrder {order_name} partially processed (some families incomplete)")
+
         time.sleep(random.uniform(2, 5))
 
     # Close JSONL file
