@@ -92,6 +92,12 @@ def analyze_jsonl(jsonl_path):
         print(f"  {page_type}: {count:,}")
     print()
 
+    if orders:
+        print(f"Orders: {len(orders):,}")
+        for i, order in enumerate(sorted(orders), 1):
+            print(f"  {i}. {order}")
+        print()
+
     # Show some examples
     if families:
         print(f"Sample families (first 10):")
@@ -99,14 +105,6 @@ def analyze_jsonl(jsonl_path):
             print(f"  {i}. {fam}")
         if len(families) > 10:
             print(f"  ... and {len(families) - 10} more")
-        print()
-
-    if orders:
-        print(f"Sample orders (first 10):")
-        for i, order in enumerate(sorted(orders)[:10], 1):
-            print(f"  {i}. {order}")
-        if len(orders) > 10:
-            print(f"  ... and {len(orders) - 10} more")
         print()
 
     if species:
