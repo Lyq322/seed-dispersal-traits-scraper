@@ -50,7 +50,7 @@ def extract_descriptions_from_html(raw_html, original_record):
         # Step 1: Find section tag with id="local"
         section = soup.find('section', id='local')
         if not section:
-            logger.warning(f"No description section found - identifier: {identifier}, url: {url}")
+            logger.info(f"No description section found - identifier: {identifier}, url: {url}")
             return descriptions
 
         # Step 2: Inside find div with class="tab-pane" and id="4"
@@ -80,54 +80,59 @@ def extract_descriptions_from_html(raw_html, original_record):
                 # 5b. Find summary tag inside div, inside find a tag and find the link
                 summary = inner_div.find('summary')
                 if not summary:
+                    logger.error(f"No summary tag found - identifier: {identifier}, url: {url}")
                     continue
 
-                a_tag = summary.find('a')
-                if not a_tag or not a_tag.get('href'):
-                    continue
+                source_name = summary.get_text(strip=True)
 
-                link_href = a_tag.get('href')
-
-                # Extract the id from the link (assuming format like "#some-id" or "some-id")
-                link_id = link_href.lstrip('#')
-
-                # 5b. Find the tag with the id associated with that link
-                # Store that tag and everything inside that tag in raw_license_html
-                license_element = soup.find(id=link_id)
-                if license_element:
-                    raw_license_html = str(license_element)
-                else:
-                    # Try finding by the full href if it's a fragment
-                    if link_href.startswith('#'):
-                        license_element = soup.find(id=link_id)
-                        raw_license_html = str(license_element) if license_element else None
-                    else:
-                        raw_license_html = None
-
-                    if not raw_license_html:
-                        logger.warning(f"License not found for link {link_href} - identifier: {identifier}, url: {url}")
-
-                # 5c. Find the first dt tag before the tag with id associated with that link
-                # Find a tag inside dt. Store the href of that a tag as source_url
-                # and store the text of the a tag as source_name
+                # 5c. Find <a> tag containing source_name with href that isn't just an ID (e.g. #H)
                 source_url = None
-                source_name = None
+                raw_license_html = None
+                found_a_tag = None
 
-                if license_element:
-                    # Find the first dt tag that comes before license_element in document order
-                    # Use find_previous to search backwards from the license element
-                    dt = license_element.find_previous('dt')
-                    if dt:
-                        dt_a = dt.find('a')
-                        if dt_a:
-                            source_url = dt_a.get('href', '')
-                            source_name = dt_a.get_text(strip=True)
-                        else:
-                            logger.warning(f"Source URL <a> tag not found in dt - identifier: {identifier}, url: {url}")
-                    else:
-                        logger.warning(f"Source URL dt tag not found before license - identifier: {identifier}, url: {url}")
+                # Search for <a> tags that contain the source_name text
+                # Look in the entire soup, not just inner_div, to find the source link
+                all_a_tags = soup.find_all('a')
+                for a_tag in all_a_tags:
+                    a_text = a_tag.get_text(strip=True)
+                    href = a_tag.get('href', '')
+
+                    # Check if this <a> tag contains the source_name and has a non-ID href
+                    if source_name == a_text:
+                        # Check if href is not just an ID (doesn't start with just #)
+                        if href and not (href.startswith('#') and len(href) <= 2):
+                            source_url = href
+                            found_a_tag = a_tag
+                            break
+
+                if not source_url:
+                    logger.error(f"Source URL not found for source_name '{source_name}' - identifier: {identifier}, url: {url}")
                 else:
-                    logger.warning(f"Source URL not found (no license element) - identifier: {identifier}, url: {url}")
+                    # Extract raw_license_html: all <dd> tags after the <dt> parent of a_tag,
+                    # before the next <dt> tag or end of parent container
+                    if found_a_tag:
+                        # Find the parent <dt> tag
+                        dt_tag = found_a_tag.find_parent('dt')
+                        if dt_tag:
+                            # Get all following siblings
+                            all_following = dt_tag.find_next_siblings()
+
+                            # Collect all <dd> tags until we hit a <dt> tag or run out
+                            dd_tags = []
+                            for sibling in all_following:
+                                if sibling.name == 'dd':
+                                    dd_tags.append(sibling)
+                                elif sibling.name == 'dt':
+                                    # Stop at next <dt> tag
+                                    break
+
+                            # Convert all <dd> tags to HTML string
+                            if dd_tags:
+                                raw_license_html = ''.join(str(dd) for dd in dd_tags)
+                            else:
+                                logger.error(f"No <dd> tags found after <dt> for source_name '{source_name}' - identifier: {identifier}, url: {url}")
+                        else:
+                            logger.error(f"No <dt> parent found for <a> tag with source_url - identifier: {identifier}, url: {url}, source_name: {source_name}")
 
                 # Create description record
                 description_record = {
@@ -207,7 +212,7 @@ def process_jsonl(input_path, output_path):
                 if not raw_html:
                     identifier = record.get('identifier', 'unknown')
                     url = record.get('url', 'unknown')
-                    logger.warning(f"No raw_html field - identifier: {identifier}, url: {url}")
+                    logger.error(f"No raw_html field - identifier: {identifier}, url: {url}")
                     records_without_descriptions += 1
                     continue
 
