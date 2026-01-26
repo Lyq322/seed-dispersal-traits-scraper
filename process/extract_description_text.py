@@ -37,10 +37,10 @@ def extract_text_from_description_html(raw_description_html):
         raw_description_html: HTML content string
 
     Returns:
-        Tuple of (descriptions_text, source_name_from_description) or (None, None) if extraction fails
+        String containing concatenated description text, or None if extraction fails
     """
     if not raw_description_html:
-        return None, None
+        return None
 
     try:
         soup = BeautifulSoup(raw_description_html, 'html.parser')
@@ -48,10 +48,7 @@ def extract_text_from_description_html(raw_description_html):
         # Step 1: Find summary tag
         summary = soup.find('summary')
         if not summary:
-            return None, None
-
-        # Extract text from summary tag
-        source_name_from_description = summary.get_text(separator=' ', strip=True)
+            return None
 
         # Step 2: Get all siblings after the summary tag
         # They come in pairs of (b, div)
@@ -97,13 +94,13 @@ def extract_text_from_description_html(raw_description_html):
         # Step 4: Concatenate all pairs
         if description_parts:
             descriptions_text = ' '.join(description_parts)
-            return descriptions_text, source_name_from_description
+            return descriptions_text
         else:
-            return None, source_name_from_description
+            return None
 
     except Exception as e:
         logger.warning(f"Error extracting text from HTML: {e}")
-        return None, None
+        return None
 
 
 def extract_text_outside_span(b_tag):
@@ -180,17 +177,15 @@ def process_jsonl(input_path, output_path):
                     records_without_text += 1
                     # Still write the record without descriptions_text
                     record['descriptions_text'] = None
-                    record['source_name_from_description'] = None
                     outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
                     total_output_records += 1
                     continue
 
-                # Extract description text and summary text
-                descriptions_text, source_name_from_description = extract_text_from_description_html(raw_description_html)
+                # Extract description text
+                descriptions_text = extract_text_from_description_html(raw_description_html)
 
-                # Add descriptions_text and source_name_from_description to record
+                # Add descriptions_text to record
                 record['descriptions_text'] = descriptions_text
-                record['source_name_from_description'] = source_name_from_description
 
                 if descriptions_text:
                     records_with_text += 1
