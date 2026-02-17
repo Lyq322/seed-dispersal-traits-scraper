@@ -31,6 +31,13 @@ except ImportError:
 # Tag prefix for language. On re-run we delete any tag with this prefix, then append the new one.
 LANG_TAG_PREFIX = "lang_"
 
+# Overwrite rules: for rows from SOURCE labeled WRONG_LANG, set to CORRECT_LANG.
+# Each tuple is (wrong_lang, source_name, correct_lang). Edit this list as needed.
+OVERWRITE_RULES = [
+    # ("en", "Plants of Nepal", "ne"),
+    ("ca", "Brazilian Flora 2020 project - Projeto Flora do Brasil 2020", "pt")
+]
+
 
 def detect_language(text):
     """
@@ -84,7 +91,7 @@ def _progress_iter(sequence, desc, total, use_tqdm):
 def build_row_languages(descriptions_path, progress=False):
     """
     Read descriptions_text_by_source.jsonl and return an ordered list of
-    (row_identifier, lang_code) per row. row_identifier = identifier + "_" + source_name.
+    (row_identifier, lang_code, source_name) per row. row_identifier = identifier + "_" + source_name.
     """
     result = []
     with open(descriptions_path, "r", encoding="utf-8") as f:
@@ -105,9 +112,10 @@ def build_row_languages(descriptions_path, progress=False):
         except json.JSONDecodeError:
             continue
         row_id = row_identifier(record)
+        source_name = (record.get("source_name") or "").strip() or "unknown"
         text = record.get("descriptions_text") or record.get("raw_description_html") or ""
         lang_code = detect_language(text)
-        result.append((row_id, lang_code))
+        result.append((row_id, lang_code, source_name))
     return result
 
 
@@ -172,8 +180,26 @@ def main():
         print("Pass 1: reading descriptions and detecting language...", file=sys.stderr)
     row_languages = build_row_languages(descriptions_path, progress=show_progress)
     total_descriptions = len(row_languages)
+
+    # Overwrite: for each (wrong_lang, source, correct_lang) rule, change matching rows
+    if OVERWRITE_RULES:
+        overwritten_by_rule = {r: 0 for r in OVERWRITE_RULES}
+        new_row_languages = []
+        for row_id, lang_code, source_name in row_languages:
+            for wrong, source, correct in OVERWRITE_RULES:
+                if source_name == source and (lang_code or "").lower() == wrong:
+                    lang_code = correct
+                    overwritten_by_rule[(wrong, source, correct)] += 1
+                    break
+            new_row_languages.append((row_id, lang_code, source_name))
+        row_languages = new_row_languages
+        if not show_progress:
+            for (wrong, source, correct), count in overwritten_by_rule.items():
+                if count:
+                    print(f"  Overwrite: {count} rows from source {source!r} {wrong} -> {correct}.", file=sys.stderr)
+
     by_lang = {}
-    for _, lang in row_languages:
+    for (_, lang, _) in row_languages:
         by_lang[lang] = by_lang.get(lang, 0) + 1
     if not show_progress:
         print(f"  {total_descriptions} description rows.", file=sys.stderr)
@@ -226,7 +252,7 @@ def main():
 
             # Match by line order; use composite row_identifier from Pass 1
             if desc_index < len(row_languages):
-                row_id, lang_code = row_languages[desc_index]
+                row_id, lang_code, _ = row_languages[desc_index]
                 desc_index += 1
             else:
                 row_id = tag_obj.get("identifier")
