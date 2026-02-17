@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Seed dispersal descriptions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;1,7..72,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --surface: #fffef9;
+      --border: #d4cfc4;
+      --text: #2c2a26;
+      --muted: #6b6560;
+      --accent: #3d6b4f;
+      --accent-hover: #2d5239;
+      --focus: #7a9b82;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0 0 1rem 0;
+      letter-spacing: 0.02em;
+    }
+    .filters {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .filters h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 0.75rem 0;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.25rem;
+      align-items: flex-end;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .field label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .field input,
+    .field select {
+      font: inherit;
+      padding: 0.4rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      min-width: 140px;
+    }
+    .field input:focus,
+    .field select:focus {
+      outline: none;
+      border-color: var(--focus);
+      box-shadow: 0 0 0 2px rgba(122, 155, 130, 0.2);
+    }
+    .field select[multiple] {
+      min-height: 80px;
+    }
+    .tags-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .tags-wrap .tags-actions {
+      font-size: 0.75rem;
+    }
+    .tags-wrap .tags-actions a {
+      color: var(--accent);
+      cursor: pointer;
+      margin-right: 0.75rem;
+    }
+    .tags-wrap .tags-actions a:hover { text-decoration: underline; }
+    .tags-checkboxes {
+      max-height: 120px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface);
+    }
+    .tags-checkboxes label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      padding: 0.2rem 0;
+      font-weight: normal;
+      color: var(--text);
+    }
+    .tags-checkboxes input[type="checkbox"] {
+      margin: 0;
+      cursor: pointer;
+    }
+    button.primary {
+      font: inherit;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    button.primary:hover {
+      background: var(--accent-hover);
+    }
+    button.primary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .status.loading { color: var(--accent); }
+    .status.error { color: #a63d3d; }
+    .results-head {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card .meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .card .meta span { margin-right: 0.75rem; }
+    .card .taxon {
+      font-family: 'Literata', Georgia, serif;
+      font-size: 1rem;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+    .card .source {
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+    .card .card-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-bottom: 0.6rem;
+    }
+    .card .tag-pill {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+    }
+    .card .description {
+      font-family: 'Literata', Georgia, serif;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .card .description.collapsed {
+      max-height: 8em;
+      overflow: hidden;
+      position: relative;
+    }
+    .card .description.collapsed::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 3em;
+      background: linear-gradient(transparent, var(--surface));
+    }
+    .card .toggle-text {
+      font-size: 0.8rem;
+      color: var(--accent);
+      cursor: pointer;
+      margin-top: 0.25rem;
+      user-select: none;
+    }
+    .card .toggle-text:hover { text-decoration: underline; }
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .pagination button {
+      font: inherit;
+      padding: 0.35rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .pagination button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .pagination button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Seed dispersal descriptions</h1>
+    <p class="status" id="status">Checking server…</p>
+
+    <div class="filters" id="filtersPanel" style="display: none;">
+      <h2>Filters</h2>
+      <div class="row">
+        <div class="field">
+          <label>Tags (all required)</label>
+          <div class="tags-wrap">
+            <div class="tags-actions">
+              <a id="tagsClear" href="#">Clear all</a>
+            </div>
+            <div id="tagsContainer" class="tags-checkboxes" role="group" aria-label="Tags filter"></div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="order">Order</label>
+          <select id="order"></select>
+        </div>
+        <div class="field">
+          <label for="family">Family</label>
+          <select id="family"></select>
+        </div>
+        <div class="field">
+          <label for="source">Source</label>
+          <select id="source"></select>
+        </div>
+        <div class="field">
+          <label for="genus">Genus (substring)</label>
+          <input type="text" id="genus" placeholder="e.g. Quercus">
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button type="button" class="primary" id="applyBtn">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="results-head" id="resultsHead" style="display: none;"></p>
+    <div id="results"></div>
+    <div class="pagination" id="pagination" style="display: none;"></div>
+  </div>
+
+  <script>
+    const API = '';
+    const PAGE_SIZE = 20;
+
+    let filterOptions = { orders: [], families: [], sources: [], tags: [] };
+    let total = 0;
+    let currentOffset = 0;
+
+    async function checkStatus() {
+      const el = document.getElementById('status');
+      try {
+        const r = await fetch(API + '/api/status');
+        const d = await r.json();
+        if (d.ready) {
+          el.textContent = `Ready — ${(d.count || 0).toLocaleString()} descriptions indexed.`;
+          el.className = 'status';
+          await loadFilterOptions();
+          document.getElementById('filtersPanel').style.display = 'block';
+          return true;
+        }
+        el.textContent = d.error || 'Building index…';
+        el.className = 'status ' + (d.error ? 'error' : 'loading');
+        return false;
+      } catch (e) {
+        el.textContent = 'Cannot reach server. Start with: python web/app.py';
+        el.className = 'status error';
+        return false;
+      }
+    }
+
+    async function loadFilterOptions() {
+      try {
+        const r = await fetch(API + '/api/filter-options');
+        if (!r.ok) return;
+        filterOptions = await r.json();
+        const empty = { value: '', text: '(any)' };
+        fillSelect('order', filterOptions.orders, empty);
+        fillSelect('family', filterOptions.families, empty);
+        fillSelect('source', filterOptions.sources, empty);
+        const container = document.getElementById('tagsContainer');
+        container.innerHTML = '';
+        (filterOptions.tags || []).forEach(tag => {
+          const label = document.createElement('label');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = tag;
+          cb.name = 'tag';
+          label.appendChild(cb);
+          label.appendChild(document.createTextNode(tag));
+          container.appendChild(label);
+        });
+        document.getElementById('tagsClear').onclick = (e) => {
+          e.preventDefault();
+          container.querySelectorAll('input[name="tag"]').forEach(cb => { cb.checked = false; });
+        };
+      } catch (e) {}
+    }
+
+    function fillSelect(id, list, firstOption, multi) {
+      const sel = document.getElementById(id);
+      sel.innerHTML = '';
+      if (firstOption) {
+        const o = document.createElement('option');
+        o.value = firstOption.value;
+        o.textContent = firstOption.text;
+        sel.appendChild(o);
+      }
+      (list || []).forEach(v => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = v;
+        sel.appendChild(o);
+      });
+      if (multi) sel.multiple = true;
+    }
+
+    function getFilters() {
+      const selectedTags = Array.from(document.querySelectorAll('#tagsContainer input[name="tag"]:checked')).map(cb => cb.value);
+      return {
+        tags: selectedTags.join(','),
+        order: document.getElementById('order').value.trim(),
+        family: document.getElementById('family').value.trim(),
+        sources: document.getElementById('source').value.trim(),
+        genus: document.getElementById('genus').value.trim(),
+      };
+    }
+
+    async function fetchDescriptions(offset = 0) {
+      const f = getFilters();
+      const params = new URLSearchParams({
+        limit: PAGE_SIZE,
+        offset: String(offset),
+        preview: '800',
+      });
+      if (f.tags) params.set('tags', f.tags);
+      if (f.order) params.set('order', f.order);
+      if (f.family) params.set('family', f.family);
+      if (f.sources) params.set('sources', f.sources);
+      if (f.genus) params.set('genus', f.genus);
+      const r = await fetch(API + '/api/descriptions?' + params);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    function renderCard(item, index) {
+      const taxon = [item.genus_name, item.species_name].filter(Boolean).join(' ') || item.identifier || '—';
+      const meta = [item.order_name, item.family_name].filter(Boolean).join(' · ');
+      const fullText = item.descriptions_text || '';
+      const preview = item.preview || '';
+      const isLong = fullText.length > (item.preview ? item.preview.length : 0);
+      const id = 'desc-' + (currentOffset + index);
+      const tags = item.tags || [];
+      const tagsHtml = tags.length
+        ? '<div class="card-tags">' + tags.map(t => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('') + '</div>'
+        : '';
+      return `
+        <div class="card">
+          <div class="meta">${meta || '—'}</div>
+          <div class="taxon">${escapeHtml(taxon)}</div>
+          <div class="source">${escapeHtml(item.source_name || '')}</div>
+          ${tagsHtml}
+          <div class="description ${isLong ? 'collapsed' : ''}" id="${id}" data-full="${escapeAttr(fullText)}">${escapeHtml(preview)}</div>
+          ${isLong ? `<div class="toggle-text" data-for="${id}">Show more</div>` : ''}
+        </div>
+      `;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/"/g, '&quot;');
+    }
+
+    function bindToggles() {
+      document.querySelectorAll('.toggle-text').forEach(el => {
+        el.onclick = () => {
+          const target = document.getElementById(el.dataset.for);
+          if (!target) return;
+          const decode = (s) => {
+            const d = document.createElement('div');
+            d.innerHTML = s;
+            return d.textContent;
+          };
+          if (target.classList.contains('collapsed')) {
+            target.textContent = decode(target.dataset.full);
+            target.classList.remove('collapsed');
+            el.textContent = 'Show less';
+          } else {
+            target.textContent = decode(target.dataset.full).slice(0, 800) + '...';
+            target.classList.add('collapsed');
+            el.textContent = 'Show more';
+          }
+        };
+      });
+    }
+
+    function renderPagination(data) {
+      total = data.total;
+      const pag = document.getElementById('pagination');
+      if (total <= PAGE_SIZE) {
+        pag.style.display = 'none';
+        return;
+      }
+      pag.style.display = 'flex';
+      const prev = currentOffset > 0;
+      const next = currentOffset + PAGE_SIZE < total;
+      pag.innerHTML = `
+        <button type="button" id="prevPage" ${prev ? '' : 'disabled'}>Previous</button>
+        <span>${currentOffset + 1}–${Math.min(currentOffset + PAGE_SIZE, total)} of ${total.toLocaleString()}</span>
+        <button type="button" id="nextPage" ${next ? '' : 'disabled'}>Next</button>
+      `;
+      pag.querySelector('#prevPage').onclick = () => { currentOffset -= PAGE_SIZE; runSearch(); };
+      pag.querySelector('#nextPage').onclick = () => { currentOffset += PAGE_SIZE; runSearch(); };
+    }
+
+    async function runSearch() {
+      const head = document.getElementById('resultsHead');
+      const results = document.getElementById('results');
+      const btn = document.getElementById('applyBtn');
+      btn.disabled = true;
+      results.innerHTML = '<p class="status">Loading…</p>';
+      try {
+        const data = await fetchDescriptions(currentOffset);
+        head.style.display = 'block';
+        head.textContent = `Showing ${Math.min(currentOffset + PAGE_SIZE, data.total)} of ${data.total.toLocaleString()} description(s).`;
+        results.innerHTML = data.results.map((item, i) => renderCard(item, i)).join('');
+        bindToggles();
+        renderPagination(data);
+      } catch (e) {
+        results.innerHTML = '<p class="status error">' + escapeHtml(e.message) + '</p>';
+      }
+      btn.disabled = false;
+    }
+
+    document.getElementById('applyBtn').addEventListener('click', () => {
+      currentOffset = 0;
+      runSearch();
+    });
+
+    (async () => {
+      const ok = await checkStatus();
+      if (!ok) setInterval(checkStatus, 3000);
+    })();
+  </script>
+</body>
+</html>
