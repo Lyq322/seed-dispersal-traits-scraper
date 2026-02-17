@@ -10,8 +10,9 @@ import json
 import sys
 from pathlib import Path
 
-# Output: one line per row of descriptions_text_by_source.jsonl; each line is {"identifier": "...", "tags": [...]}.
-ROW_TAGS_FILENAME = "descriptions_text_by_source_row_tags.jsonl"
+# Output: one line per row of descriptions_text_by_source.jsonl; each line is {"identifier": "<id>_<source_name>", "tags": [...]}.
+# Row identifier = original identifier + "_" + source_name (from descriptions_text_by_source / descriptions_by_source).
+ROW_TAGS_FILENAME = "tags.jsonl"
 
 # Tags this script owns; we remove any existing and set exactly one of seedless / has_seed.
 SEED_STATUS_TAGS = {"seedless", "has_seed"}
@@ -202,9 +203,12 @@ def main():
                 merged.append("has_seed")
                 has_seed_count += 1
 
-            identifier = record.get("identifier")
+            # Row identifier = original identifier + "_" + source_name
+            orig_id = record.get("identifier") or ""
+            source_name = (record.get("source_name") or "").strip() or "unknown"
+            row_identifier = f"{orig_id}_{source_name}" if orig_id else source_name
             fout.write(
-                json.dumps({"identifier": identifier, "tags": merged}) + "\n"
+                json.dumps({"identifier": row_identifier, "tags": merged}) + "\n"
             )
             row_index += 1
 
