@@ -248,6 +248,13 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .show-more-wrap {
+      margin-top: 1rem;
+      text-align: center;
+    }
+    .show-more-wrap .primary {
+      padding: 0.5rem 1.5rem;
+    }
   </style>
 </head>
 <body>
@@ -284,6 +291,18 @@
           <input type="text" id="genus" placeholder="e.g. Quercus">
         </div>
         <div class="field">
+          <label for="minWords">Min words</label>
+          <input type="number" id="minWords" placeholder="e.g. 50" min="0" step="1" style="min-width: 6rem;">
+        </div>
+        <div class="field">
+          <label for="perPage">Per page</label>
+          <select id="perPage">
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <div class="field">
           <label>&nbsp;</label>
           <button type="button" class="primary" id="applyBtn">Apply</button>
         </div>
@@ -293,15 +312,22 @@
     <p class="results-head" id="resultsHead" style="display: none;"></p>
     <div id="results"></div>
     <div class="pagination" id="pagination" style="display: none;"></div>
+    <div class="show-more-wrap" id="showMoreWrap" style="display: none;">
+      <button type="button" class="primary" id="showMoreBtn">Show more</button>
+    </div>
   </div>
 
   <script>
     const API = '';
-    const PAGE_SIZE = 20;
 
     let filterOptions = { orders: [], families: [], sources: [], tags: [] };
     let total = 0;
     let currentOffset = 0;
+    let loadedResults = [];
+
+    function getPageSize() {
+      return Math.min(100, Math.max(20, parseInt(document.getElementById('perPage').value, 10) || 20));
+    }
 
     async function checkStatus() {
       const el = document.getElementById('status');
@@ -373,19 +399,23 @@
 
     function getFilters() {
       const selectedTags = Array.from(document.querySelectorAll('#tagsContainer input[name="tag"]:checked')).map(cb => cb.value);
+      const minWordsEl = document.getElementById('minWords');
+      const minWords = minWordsEl && minWordsEl.value.trim() ? parseInt(minWordsEl.value, 10) : 0;
       return {
         tags: selectedTags.join(','),
         order: document.getElementById('order').value.trim(),
         family: document.getElementById('family').value.trim(),
         sources: document.getElementById('source').value.trim(),
         genus: document.getElementById('genus').value.trim(),
+        min_words: isNaN(minWords) || minWords <= 0 ? 0 : minWords,
       };
     }
 
-    async function fetchDescriptions(offset = 0) {
+    async function fetchDescriptions(offset = 0, limit) {
+      if (limit == null) limit = getPageSize();
       const f = getFilters();
       const params = new URLSearchParams({
-        limit: PAGE_SIZE,
+        limit: String(limit),
         offset: String(offset),
         preview: '800',
       });
@@ -394,6 +424,7 @@
       if (f.family) params.set('family', f.family);
       if (f.sources) params.set('sources', f.sources);
       if (f.genus) params.set('genus', f.genus);
+      if (f.min_words > 0) params.set('min_words', String(f.min_words));
       const r = await fetch(API + '/api/descriptions?' + params);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
@@ -405,7 +436,7 @@
       const fullText = item.descriptions_text || '';
       const preview = item.preview || '';
       const isLong = fullText.length > (item.preview ? item.preview.length : 0);
-      const id = 'desc-' + (currentOffset + index);
+      const id = 'desc-' + index;
       const tags = item.tags || [];
       const tagsHtml = tags.length
         ? '<div class="card-tags">' + tags.map(t => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('') + '</div>'
@@ -454,48 +485,86 @@
       });
     }
 
-    function renderPagination(data) {
-      total = data.total;
+    function renderPagination() {
+      const pageSize = getPageSize();
       const pag = document.getElementById('pagination');
-      if (total <= PAGE_SIZE) {
+      if (total <= 0) {
         pag.style.display = 'none';
         return;
       }
       pag.style.display = 'flex';
       const prev = currentOffset > 0;
-      const next = currentOffset + PAGE_SIZE < total;
+      const next = currentOffset + pageSize < total;
+      const start = currentOffset + 1;
+      const end = currentOffset + loadedResults.length;
       pag.innerHTML = `
         <button type="button" id="prevPage" ${prev ? '' : 'disabled'}>Previous</button>
-        <span>${currentOffset + 1}–${Math.min(currentOffset + PAGE_SIZE, total)} of ${total.toLocaleString()}</span>
+        <span>${start}–${end} of ${total.toLocaleString()}</span>
         <button type="button" id="nextPage" ${next ? '' : 'disabled'}>Next</button>
       `;
-      pag.querySelector('#prevPage').onclick = () => { currentOffset -= PAGE_SIZE; runSearch(); };
-      pag.querySelector('#nextPage').onclick = () => { currentOffset += PAGE_SIZE; runSearch(); };
+      pag.querySelector('#prevPage').onclick = () => { currentOffset -= pageSize; runSearch(); };
+      pag.querySelector('#nextPage').onclick = () => { currentOffset += pageSize; runSearch(); };
     }
 
-    async function runSearch() {
+    function updateShowMoreButton() {
+      const wrap = document.getElementById('showMoreWrap');
+      if (total > 0 && loadedResults.length < total) {
+        wrap.style.display = 'block';
+        const btn = document.getElementById('showMoreBtn');
+        btn.disabled = false;
+        btn.textContent = 'Show more';
+      } else {
+        wrap.style.display = 'none';
+      }
+    }
+
+    async function runSearch(append) {
       const head = document.getElementById('resultsHead');
       const results = document.getElementById('results');
       const btn = document.getElementById('applyBtn');
-      btn.disabled = true;
-      results.innerHTML = '<p class="status">Loading…</p>';
+      const showMoreBtn = document.getElementById('showMoreBtn');
+      if (!append) btn.disabled = true;
+      if (append) showMoreBtn.disabled = true;
+      if (!append) results.innerHTML = '<p class="status">Loading…</p>';
+      const pageSize = getPageSize();
+      const offset = append ? loadedResults.length : currentOffset;
       try {
-        const data = await fetchDescriptions(currentOffset);
-        head.style.display = 'block';
-        head.textContent = `Showing ${Math.min(currentOffset + PAGE_SIZE, data.total)} of ${data.total.toLocaleString()} description(s).`;
-        results.innerHTML = data.results.map((item, i) => renderCard(item, i)).join('');
+        const data = await fetchDescriptions(offset, pageSize);
+        if (append) {
+          const prevLen = loadedResults.length;
+          loadedResults = loadedResults.concat(data.results);
+          total = data.total;
+          head.style.display = 'block';
+          head.textContent = `Showing ${loadedResults.length} of ${total.toLocaleString()} description(s).`;
+          const newCards = loadedResults.slice(prevLen).map((item, i) => renderCard(item, prevLen + i)).join('');
+          results.insertAdjacentHTML('beforeend', newCards);
+        } else {
+          total = data.total;
+          loadedResults = data.results;
+          head.style.display = 'block';
+          head.textContent = `Showing ${loadedResults.length} of ${total.toLocaleString()} description(s).`;
+          results.innerHTML = loadedResults.map((item, i) => renderCard(item, i)).join('');
+        }
         bindToggles();
-        renderPagination(data);
+        renderPagination();
+        updateShowMoreButton();
       } catch (e) {
-        results.innerHTML = '<p class="status error">' + escapeHtml(e.message) + '</p>';
+        if (!append) results.innerHTML = '<p class="status error">' + escapeHtml(e.message) + '</p>';
       }
       btn.disabled = false;
+      if (showMoreBtn) showMoreBtn.disabled = false;
+    }
+
+    async function onShowMore() {
+      await runSearch(true);
     }
 
     document.getElementById('applyBtn').addEventListener('click', () => {
       currentOffset = 0;
-      runSearch();
+      runSearch(false);
     });
+
+    document.getElementById('showMoreBtn').addEventListener('click', onShowMore);
 
     (async () => {
       const ok = await checkStatus();

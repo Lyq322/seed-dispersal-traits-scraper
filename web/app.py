@@ -81,6 +81,8 @@ def build_index():
                 genus_name = (record.get("genus_name") or "").strip() or None
                 species_name = (record.get("species_name") or "").strip() or None
                 source_name = (record.get("source_name") or "").strip() or None
+                text = (record.get("descriptions_text") or "").strip()
+                word_count = len(text.split()) if text else 0
                 if order_name:
                     orders.add(order_name)
                 if family_name:
@@ -95,6 +97,7 @@ def build_index():
                     "genus_name": genus_name,
                     "species_name": species_name,
                     "source_name": source_name,
+                    "word_count": word_count,
                 })
         _filter_options["orders"] = sorted(orders)
         _filter_options["families"] = sorted(families)
@@ -156,6 +159,7 @@ def descriptions():
     family_list = [s.strip() for s in family_param.split(",") if s.strip()] or None
     genus_param = request.args.get("genus", "")
     genus_list = [s.strip() for s in genus_param.split(",") if s.strip()] or None
+    min_words = max(0, int(request.args.get("min_words", 0) or 0))
     limit = min(int(request.args.get("limit", 50)), 100)
     offset = max(0, int(request.args.get("offset", 0)))
     preview = int(request.args.get("preview", 800))
@@ -181,6 +185,8 @@ def descriptions():
         if family_list and not matches_filter(meta["family_name"], family_list, exact):
             continue
         if genus_list and not matches_filter(meta["genus_name"], genus_list, exact):
+            continue
+        if min_words > 0 and meta.get("word_count", 0) < min_words:
             continue
         indices.append(i)
         if len(indices) >= offset + limit:
