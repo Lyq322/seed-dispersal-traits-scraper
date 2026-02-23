@@ -64,14 +64,18 @@ def main():
                     by_lang[lang][source] += 1
                     break  # at most one lang tag per row
 
+    grand_total = sum(sum(sources.values()) for sources in by_lang.values())
+
     # Sort languages for stable output
     for lang in sorted(by_lang.keys()):
         sources = by_lang[lang]
         total = sum(sources.values())
-        print(f"\n=== {lang} (total: {total:,}) ===")
+        pct = 100.0 * total / grand_total if grand_total else 0
+        print(f"\n=== {lang} (total: {total:,}, {pct:.1f}%) ===")
         # Sort sources by count descending, then by name
         for source, count in sorted(sources.items(), key=lambda x: (-x[1], x[0])):
-            print(f"  {count:>8,}  {source}")
+            pct_source = 100.0 * count / total if total else 0
+            print(f"  {count:>8,}  ({pct_source:5.1f}%)  {source}")
 
     print()
     return 0
