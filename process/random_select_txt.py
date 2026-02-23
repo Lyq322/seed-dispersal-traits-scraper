@@ -2,32 +2,66 @@
 Script to randomly select x number of txt files from data/flora_traiter
 and copy them to data/flora_traiter_test.
 
-Supports optional --tag to filter by identifier using data/processed/tags.jsonl (e.g. has_seed).
+Supports optional --tag (one or more) to filter by identifier using data/processed/tags.jsonl (e.g. --tag has_seed has_fruit); identifier must have ALL of the tags.
 Each line is JSON with "identifier" and "tags" (list); only txt files whose identifier has the tag are considered.
+
+tags.jsonl uses composite identifiers (identifier_source_name, e.g. wfo-7000000004_Flora of North America @ efloras.org).
+Txt filenames use a sanitized prefix before _NNNNNN: same id and source with spaces/special chars replaced by underscores.
+Matching uses that sanitized prefix so tag filters work correctly.
 """
 
 import argparse
 import json
 import random
+import re
 import shutil
 import sys
 from pathlib import Path
 
 
-def _identifier_from_txt_path(path):
-    """Extract identifier from a txt filename (e.g. wfo-7000000004_Flora_of_China_....txt -> wfo-7000000004)."""
-    stem = path.stem
-    if "_" not in stem:
-        return stem
-    return stem.split("_")[0]
+def _sanitize_filename(text, max_length=100):
+    """Match jsonl_to_txt_files sanitization so we can match tags identifiers to txt filename prefixes."""
+    if not text or not isinstance(text, str):
+        return "unknown"
+    s = re.sub(r'[<>:"/\\|?*\s]+', '_', text.strip())
+    s = re.sub(r'[^\w\-_\.]', '', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    if len(s) > max_length:
+        s = s[:max_length]
+    return s or "unknown"
+
+
+def _txt_stem_prefix(stem):
+    """
+    Return the part of a txt filename stem that corresponds to the composite identifier.
+    Stem is like wfo-7000000004_Flora_of_North_America_efloras.org_000001 -> prefix is before _\\d{6}.
+    """
+    return re.sub(r"_\d{6}$", "", stem) if stem else ""
+
+
+def _allowed_prefix_from_tags_identifier(composite_id):
+    """
+    Convert tags.jsonl composite identifier to the same prefix form used in txt filenames.
+    composite_id is 'identifier_source_name' (e.g. wfo-7000000004_Flora of North America @ efloras.org).
+    Txt files are named sanitize(id)_sanitize(source)_line.txt with 50-char truncation each.
+    """
+    if not composite_id or "_" not in composite_id:
+        return _sanitize_filename(composite_id or "", 50)
+    ident, _, source = composite_id.partition("_")
+    safe_id = _sanitize_filename(ident, 50)
+    safe_source = _sanitize_filename(source, 50)
+    if not safe_source or safe_source == "unknown":
+        return f"{safe_id}"
+    return f"{safe_id}_{safe_source}"
 
 
 def load_tagged_identifiers(tags_jsonl_path, tag):
     """
-    Load identifiers that have the given tag in at least one row.
-    tags_jsonl must have one JSON object per line: {"identifier": "...", "tags": [...]}.
+    Load the set of txt-filename prefixes that have the given tag.
+    tags.jsonl has composite identifiers (id_source_name). We convert each to the
+    same sanitized prefix form used in txt filenames so matching works.
     """
-    allowed = set()
+    allowed_prefixes = set()
     path = Path(tags_jsonl_path)
     if not path.exists():
         return None
@@ -42,13 +76,13 @@ def load_tagged_identifiers(tags_jsonl_path, tag):
                 if tag in tags:
                     ident = obj.get("identifier")
                     if ident is not None:
-                        allowed.add(ident)
+                        allowed_prefixes.add(_allowed_prefix_from_tags_identifier(ident))
             except json.JSONDecodeError:
                 continue
-    return allowed
+    return allowed_prefixes
 
 
-def random_select_txt_files(source_dir, dest_dir, num_files, tag=None, tags_jsonl=None):
+def random_select_txt_files(source_dir, dest_dir, num_files, tags=None, tags_jsonl=None):
     """
     Randomly select num_files txt files from source_dir and copy to dest_dir.
 
@@ -56,8 +90,8 @@ def random_select_txt_files(source_dir, dest_dir, num_files, tag=None, tags_json
         source_dir: Path to source directory (e.g. data/flora_traiter)
         dest_dir: Path to destination directory (e.g. data/flora_traiter_test)
         num_files: Number of files to randomly select
-        tag: Optional tag to filter by (e.g. "has_seed"); only txt files whose
-             identifier has this tag in tags_jsonl are considered.
+        tags: Optional list of tags to filter by (e.g. ["has_seed", "has_fruit"]);
+              only txt files whose identifier has ALL of these tags in tags_jsonl are considered.
         tags_jsonl: Path to JSONL with "identifier" and "tags" per line.
 
     Returns:
@@ -77,17 +111,22 @@ def random_select_txt_files(source_dir, dest_dir, num_files, tag=None, tags_json
         print(f"Error: No .txt files found in {source_dir}")
         return False
 
-    if tag and tags_jsonl:
-        allowed_identifiers = load_tagged_identifiers(tags_jsonl, tag)
-        if allowed_identifiers is None:
-            print(f"Error: Tags file not found: {tags_jsonl}")
-            return False
-        # Keep only txt files whose identifier (from filename) is in allowed set
-        txt_files = [f for f in txt_files if _identifier_from_txt_path(f) in allowed_identifiers]
+    if tags and tags_jsonl:
+        allowed_sets = []
+        for tag in tags:
+            ids = load_tagged_identifiers(tags_jsonl, tag)
+            if ids is None:
+                print(f"Error: Tags file not found: {tags_jsonl}")
+                return False
+            allowed_sets.append(ids)
+        # Identifier must have ALL tags: intersection of the sets
+        allowed_identifiers = set.intersection(*allowed_sets) if allowed_sets else set()
+        # Keep only txt files whose filename prefix matches a tagged row (composite id -> same prefix as filename)
+        txt_files = [f for f in txt_files if _txt_stem_prefix(f.stem) in allowed_identifiers]
         if not txt_files:
-            print(f"Error: No .txt files found with tag '{tag}' in {tags_jsonl}")
+            print(f"Error: No .txt files found with all tags {tags!r} in {tags_jsonl}")
             return False
-        print(f"Filtered to {len(txt_files)} files with tag '{tag}'")
+        print(f"Filtered to {len(txt_files)} files with all tags {tags}")
 
     if num_files > len(txt_files):
         print(f"Warning: Requested {num_files} files but only {len(txt_files)} available. Selecting all.")
@@ -135,9 +174,11 @@ def main():
     parser.add_argument(
         "--tag",
         type=str,
+        action="append",
         default=None,
         metavar="TAG",
-        help="Only consider txt files whose identifier has this tag (e.g. has_seed); uses data/processed/tags.jsonl",
+        dest="tags",
+        help="Only consider txt files whose identifier has ALL of these tags (can be repeated, e.g. --tag has_seed --tag lang_es); uses data/processed/tags.jsonl",
     )
     args = parser.parse_args()
 
@@ -147,16 +188,16 @@ def main():
 
     print(f"Selecting {args.num_files} random txt files from {args.source_dir}")
     print(f"Destination: {args.dest_dir}")
-    if args.tag:
-        print(f"Tag filter: {args.tag}")
+    if args.tags:
+        print(f"Tag filter (all of): {args.tags}")
     print("-" * 60)
 
-    tags_jsonl = "data/processed/tags.jsonl" if args.tag else None
+    tags_jsonl = "data/processed/tags.jsonl" if args.tags else None
     success = random_select_txt_files(
         args.source_dir,
         args.dest_dir,
         args.num_files,
-        tag=args.tag,
+        tags=args.tags,
         tags_jsonl=tags_jsonl,
     )
 
