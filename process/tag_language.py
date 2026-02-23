@@ -31,11 +31,15 @@ except ImportError:
 # Tag prefix for language. On re-run we delete any tag with this prefix, then append the new one.
 LANG_TAG_PREFIX = "lang_"
 
-# Overwrite rules: for rows from SOURCE labeled WRONG_LANG, set to CORRECT_LANG.
-# Each tuple is (wrong_lang, source_name, correct_lang). Edit this list as needed.
+# Overwrite rules: for rows labeled WRONG_LANG, set to CORRECT_LANG.
+# Each tuple is (wrong_lang, source_name_or_none, correct_lang). If source_name is
+# None or omitted (use 2-tuple (wrong_lang, correct_lang)), the rule applies to
+# all sources with that wrong language. Edit this list as needed.
 OVERWRITE_RULES = [
     # ("en", "Plants of Nepal", "ne"),
-    ("ca", "Brazilian Flora 2020 project - Projeto Flora do Brasil 2020", "pt")
+    ("ca", "la"),
+    ("id", "la"),
+    ("it", "la"),
 ]
 
 
@@ -181,13 +185,26 @@ def main():
     row_languages = build_row_languages(descriptions_path, progress=show_progress)
     total_descriptions = len(row_languages)
 
-    # Overwrite: for each (wrong_lang, source, correct_lang) rule, change matching rows
+    # Overwrite: for each rule (wrong_lang, source_or_none, correct_lang), change matching rows.
+    # source None or "" means apply to all sources with that wrong language.
     if OVERWRITE_RULES:
-        overwritten_by_rule = {r: 0 for r in OVERWRITE_RULES}
+        def normalize_rule(r):
+            if len(r) == 2:
+                return (r[0], None, r[1])  # (wrong_lang, correct_lang) -> all sources
+            return (r[0], r[1] or None, r[2])
+
+        rules = [normalize_rule(r) for r in OVERWRITE_RULES]
+        overwritten_by_rule = {r: 0 for r in rules}
         new_row_languages = []
         for row_id, lang_code, source_name in row_languages:
-            for wrong, source, correct in OVERWRITE_RULES:
-                if source_name == source and (lang_code or "").lower() == wrong:
+            for wrong, source, correct in rules:
+                if (lang_code or "").lower() != wrong:
+                    continue
+                if source is None or source == "":
+                    match = True  # all sources for this wrong language
+                else:
+                    match = source_name == source
+                if match:
                     lang_code = correct
                     overwritten_by_rule[(wrong, source, correct)] += 1
                     break
@@ -196,7 +213,8 @@ def main():
         if not show_progress:
             for (wrong, source, correct), count in overwritten_by_rule.items():
                 if count:
-                    print(f"  Overwrite: {count} rows from source {source!r} {wrong} -> {correct}.", file=sys.stderr)
+                    scope = "all sources" if source is None else f"source {source!r}"
+                    print(f"  Overwrite: {count} rows ({scope}) {wrong} -> {correct}.", file=sys.stderr)
 
     by_lang = {}
     for (_, lang, _) in row_languages:
