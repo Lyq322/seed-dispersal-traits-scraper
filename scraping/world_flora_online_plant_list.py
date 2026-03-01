@@ -156,26 +156,34 @@ def save_species_page(url, wfo_id, html_content, item):
 
 
 def load_complete_identifiers():
-    """Load set of identifiers already present in world_flora_online_complete.jsonl (skip these)."""
+    """Load set of identifiers already in world_flora_online_complete.jsonl or world_flora_online_plant_list.jsonl (skip these)."""
     done = set()
-    if not COMPLETE_JSONL_PATH.exists():
-        return done
-    try:
-        with open(COMPLETE_JSONL_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    ident = rec.get("identifier")
-                    if ident:
-                        done.add(ident)
-                except json.JSONDecodeError:
-                    pass
-        logger.info("Loaded %s identifiers from %s (will skip these)", len(done), COMPLETE_JSONL_PATH)
-    except Exception as e:
-        logger.warning("Could not load complete identifiers from %s: %s", COMPLETE_JSONL_PATH, e)
+
+    def load_from(path):
+        count = 0
+        if not path.exists():
+            return count
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        ident = rec.get("identifier")
+                        if ident:
+                            done.add(ident)
+                            count += 1
+                    except json.JSONDecodeError:
+                        pass
+        except Exception as e:
+            logger.warning("Could not load identifiers from %s: %s", path, e)
+        return count
+
+    n_complete = load_from(COMPLETE_JSONL_PATH)
+    n_plant_list = load_from(OUTPUT_PATH)
+    logger.info("Loaded %s identifiers from %s, %s from %s → %s unique (will skip these)", n_complete, COMPLETE_JSONL_PATH, n_plant_list, OUTPUT_PATH, len(done))
     return done
 
 
@@ -261,7 +269,7 @@ def main():
     to_process = [(i, item) for i, item in to_process if (item.get("wfo_id_s") or item.get("wfo_id")) not in complete_ids]
     skipped = before_skip - len(to_process)
     if skipped:
-        logger.info("Skipping %s already in %s", skipped, COMPLETE_JSONL_PATH)
+        logger.info("Skipping %s already in %s or %s", skipped, COMPLETE_JSONL_PATH, OUTPUT_PATH)
     if args.start_index > 1:
         logger.info("Starting at index %s; accepted species to process: %s (indices %s-%s)", args.start_index, len(to_process), args.start_index, len(species_items))
     else:
