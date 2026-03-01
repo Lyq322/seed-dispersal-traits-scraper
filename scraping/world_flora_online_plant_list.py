@@ -121,7 +121,10 @@ def names_from_item(item):
     if genus_name is not None and placed_in_species_s is not None:
         expected_full = f"{genus_name} {placed_in_species_s}"
     if species_name is not None and expected_full is not None and species_name != expected_full:
-        raise ValueError(
+        # raise ValueError(
+        #     f"full_name_string_no_authors_plain_s ({species_name!r}) != genus + ' ' + placed_in_species_s ({expected_full!r})"
+        # )
+        logger.warning(
             f"full_name_string_no_authors_plain_s ({species_name!r}) != genus + ' ' + placed_in_species_s ({expected_full!r})"
         )
     return order_name, family_name, genus_name, species_name
@@ -176,13 +179,13 @@ def load_complete_identifiers():
     return done
 
 
-def scrape_one(plant_list_index, item, total):
+def scrape_one(plant_list_index, item, total_plant_list):
     """Fetch one species page and append to JSONL. Returns (plant_list_index, wfo_id, success)."""
     wfo_id = item.get("wfo_id_s") or item.get("wfo_id")
     if not wfo_id:
         logger.warning("Skipping item with no wfo_id_s (index %s): %s", plant_list_index, item)
         return plant_list_index, None, False
-    logger.info("Processing index %s / %s (%s)", plant_list_index, total, wfo_id)
+    logger.info("Processing index %s / %s (%s)", plant_list_index, total_plant_list, wfo_id)
     url = f"https://www.worldfloraonline.org/taxon/{wfo_id}"
     html = get_page_content(url)
     if not html:
@@ -236,11 +239,13 @@ def main():
 
     complete_ids = load_complete_identifiers()
 
-    # Collect accepted species from JSON (single-threaded stream). Index = position in this list (1-based).
+    # Collect accepted species from JSON (single-threaded stream). Index = position in filtered list (1-based).
     species_items = []
+    total_plant_list = 0  # full unfiltered count
     logger.info("Streaming plant list and filtering accepted species...")
     with open(PLANT_LIST_PATH, "rb") as f:
         for item in ijson.items(f, "item"):
+            total_plant_list += 1
             if item.get("role_s") != "accepted" or item.get("rank_s") != "species":
                 continue
             wfo_id = item.get("wfo_id_s") or item.get("wfo_id")
@@ -249,7 +254,7 @@ def main():
             species_items.append(item)
             if args.limit and len(species_items) >= args.limit:
                 break
-    total_in_plant_list = len(species_items)
+    logger.info("Plant list: %s total (unfiltered), %s accepted species", total_plant_list, len(species_items))
     to_process = [(i, item) for i, item in enumerate(species_items, start=1) if i >= args.start_index]
     # Skip any whose identifier is already in world_flora_online_complete.jsonl
     before_skip = len(to_process)
@@ -258,11 +263,11 @@ def main():
     if skipped:
         logger.info("Skipping %s already in %s", skipped, COMPLETE_JSONL_PATH)
     if args.start_index > 1:
-        logger.info("Starting at index %s; accepted species to process: %s (indices %s-%s)", args.start_index, len(to_process), args.start_index, total_in_plant_list)
+        logger.info("Starting at index %s; accepted species to process: %s (indices %s-%s)", args.start_index, len(to_process), args.start_index, len(species_items))
     else:
         logger.info("Accepted species to process: %s", len(to_process))
 
-    total = len(to_process)
+    total_to_process = len(to_process)
     done = 0
     failed = 0
     start_time = time.perf_counter()
@@ -271,19 +276,19 @@ def main():
     def print_progress():
         nonlocal done, failed
         completed = done + failed
-        if total == 0:
+        if total_to_process == 0:
             pct = 100.0
             bar = "[" + "=" * 30 + "]"
         else:
-            pct = 100.0 * completed / total
-            bar_filled = min(30, int(30 * completed / total))
-            if completed >= total:
+            pct = 100.0 * completed / total_to_process
+            bar_filled = min(30, int(30 * completed / total_to_process))
+            if completed >= total_to_process:
                 bar = "[" + "=" * 30 + "]"
             else:
                 bar = "[" + "=" * bar_filled + ">" + " " * (29 - bar_filled) + "]"
         elapsed = time.perf_counter() - start_time
         rate = completed / elapsed if elapsed > 0 else 0
-        remaining = (total - completed) / rate if rate > 0 else None
+        remaining = (total_to_process - completed) / rate if rate > 0 else None
         eta_str = format_eta_seconds(remaining)
         line = f"{bar} {pct:5.1f}%  done: {done}  failed: {failed}  ETA: {eta_str}   "
         with progress_lock:
@@ -292,7 +297,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(scrape_one, idx, item, total): (idx, item)
+            executor.submit(scrape_one, idx, item, total_plant_list): (idx, item)
             for idx, item in to_process
         }
         for future in as_completed(futures):
@@ -307,7 +312,7 @@ def main():
                     failed += 1
                 print_progress()
                 if (done + failed) % 100 == 0:
-                    logger.info("Progress: %s done, %s failed (index in plant list: %s / %s)", done, failed, plant_list_index, total)
+                    logger.info("Progress: %s done, %s failed (index in plant list: %s / %s)", done, failed, plant_list_index, total_plant_list)
             except Exception as e:
                 logger.exception("Task failed (index %s): %s", idx, e)
                 failed += 1
