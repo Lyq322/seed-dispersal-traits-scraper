@@ -1,8 +1,12 @@
 """
 Script to convert descriptions_text_by_source.jsonl into a folder of txt files.
 Each txt file contains the descriptions_text field, with a unique filename.
+Writes the generated txt filename (relative to output_dir) into each record
+as "txt_filename" and outputs an updated JSONL (overwriting input by default,
+or to --output-jsonl if set).
 """
 
+import argparse
 import json
 import sys
 import re
@@ -95,16 +99,28 @@ def create_unique_filename(record, line_num):
     return filename
 
 
-def convert_jsonl_to_txt_files(jsonl_path, output_dir):
+# Field name written into each record with the generated txt filename (relative path)
+TXT_FILENAME_FIELD = "txt_filename"
+
+
+def convert_jsonl_to_txt_files(jsonl_path, output_dir, output_jsonl_path=None):
     """
     Convert JSONL file to a folder of txt files.
+    Writes the generated txt filename into each record as txt_filename (relative to output_dir),
+    and writes an updated JSONL to output_jsonl_path (default: overwrite input).
 
     Args:
         jsonl_path: Path to input JSONL file
         output_dir: Path to output directory for txt files
+        output_jsonl_path: Path for updated JSONL (default: overwrite input)
     """
-    jsonl_path = Path(jsonl_path)
-    output_dir = Path(output_dir)
+    jsonl_path = Path(jsonl_path).resolve()
+    output_dir = Path(output_dir).resolve()
+    use_temp = output_jsonl_path is None
+    if use_temp:
+        out_jsonl = jsonl_path.with_suffix(".jsonl.tmp")
+    else:
+        out_jsonl = Path(output_jsonl_path).resolve()
 
     if not jsonl_path.exists():
         error_msg = f"File not found: {jsonl_path}"
@@ -139,12 +155,14 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
 
     print(f"Converting {jsonl_path} to txt files...")
     print(f"Output directory: {output_dir} (batch size: {BATCH_SIZE:,})")
+    print(f"Updated JSONL: {out_jsonl if not use_temp else str(jsonl_path) + ' (overwrite)'}")
     print(f"Log file: {LOG_FILE}")
     print("-" * 60)
     logger.info(f"Starting conversion: input={jsonl_path}, output={output_dir}")
 
     with open(jsonl_path, 'r', encoding='utf-8') as infile, \
-         open(mapping_file, 'w', encoding='utf-8') as mapfile:
+         open(mapping_file, 'w', encoding='utf-8') as mapfile, \
+         open(out_jsonl, 'w', encoding='utf-8') as outfile:
 
         for line_num, line in enumerate(infile, 1):
             if not line.strip():
@@ -152,7 +170,12 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
 
             try:
                 record = json.loads(line)
+                if not isinstance(record, dict):
+                    record = {}
                 total_records += 1
+
+                # Ensure we don't carry over a stale txt_filename from a previous run
+                record.pop(TXT_FILENAME_FIELD, None)
 
                 descriptions_text = record.get('descriptions_text')
 
@@ -175,6 +198,8 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
                         error_msg = f"File already exists: {filename} (line {line_num}, identifier: {identifier}, source_name: {source_name})"
                         print(f"\nError: {error_msg}")
                         logger.error(error_msg)
+                        # Still write record to output JSONL (without txt_filename)
+                        outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
                         continue
 
                     # Write descriptions_text to txt file
@@ -183,6 +208,9 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
 
                     files_created += 1
                     files_in_current_batch += 1
+
+                    # Write txt filename into the record for the output JSONL
+                    record[TXT_FILENAME_FIELD] = relative_path
 
                     # Write mapping entry: line number -> path -> record identifier info
                     mapping_entry = {
@@ -199,6 +227,9 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
                 else:
                     records_without_text += 1
 
+                # Write updated record to output JSONL
+                outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
+
                 # Progress indicator
                 if line_num % 1000 == 0:
                     print(f"  Processed {line_num:,} records, "
@@ -214,6 +245,9 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
                 print(f"\nWarning: {error_msg}")
                 logger.error(error_msg)
                 continue
+
+    if use_temp and out_jsonl.exists():
+        out_jsonl.replace(jsonl_path)
 
     print()  # New line after progress indicator
 
@@ -242,21 +276,30 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
 
 def main():
     """Main function."""
-    if len(sys.argv) < 2:
-        print("Usage: python jsonl_to_txt_files.py <input_jsonl> [output_dir]")
-        print("Example: python jsonl_to_txt_files.py data/processed/descriptions_text_by_source.jsonl data/processed/descriptions_txt")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Convert descriptions JSONL to txt files; write generated txt filename into each record as txt_filename."
+    )
+    parser.add_argument("input_jsonl", help="Path to input JSONL file")
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=None,
+        help="Output directory for txt files (default: <input_stem>_txt next to input)",
+    )
+    parser.add_argument(
+        "-o", "--output-jsonl",
+        dest="output_jsonl",
+        default=None,
+        help="Path for updated JSONL with txt_filename field (default: overwrite input)",
+    )
+    args = parser.parse_args()
 
-    jsonl_path = sys.argv[1]
+    jsonl_path = args.input_jsonl
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = Path(jsonl_path).parent / f"{Path(jsonl_path).stem}_txt"
 
-    if len(sys.argv) >= 3:
-        output_dir = sys.argv[2]
-    else:
-        # Default output directory
-        input_file = Path(jsonl_path)
-        output_dir = input_file.parent / f"{input_file.stem}_txt"
-
-    success = convert_jsonl_to_txt_files(jsonl_path, output_dir)
+    success = convert_jsonl_to_txt_files(jsonl_path, output_dir, output_jsonl_path=args.output_jsonl)
 
     if not success:
         sys.exit(1)
