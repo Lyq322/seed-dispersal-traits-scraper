@@ -1,6 +1,6 @@
 """
 Script to analyze JSONL files from flora scrapers.
-Counts unique families, orders, genera, and species.
+Counts unique families, orders, genera, and species by identifier (id), not by name.
 """
 
 import json
@@ -45,24 +45,17 @@ def analyze_jsonl(jsonl_path):
                 page_type = record.get('page_type', 'unknown')
                 page_type_counts[page_type] += 1
 
-                # Extract taxonomic information
-                family_name = record.get('family_name')
-                order_name = record.get('order_name')
-                genus_name = record.get('genus_name')
-                species_name = record.get('species_name')
-
-                # Add to sets (only if not None/empty)
-                if family_name:
-                    families.add(family_name)
-
-                if order_name:
-                    orders.add(order_name)
-
-                if genus_name:
-                    genera.add(genus_name)
-
-                if species_name:
-                    species.add(species_name)
+                # Count unique by identifier (id) per page type
+                identifier = record.get('identifier')
+                page_type = record.get('page_type')
+                if identifier and page_type == 'family':
+                    families.add(identifier)
+                elif identifier and page_type == 'order':
+                    orders.add(identifier)
+                elif identifier and page_type == 'genus':
+                    genera.add(identifier)
+                elif identifier and page_type == 'species':
+                    species.add(identifier)
 
                 # Progress indicator for large files
                 if line_num % 10000 == 0:
@@ -93,24 +86,26 @@ def analyze_jsonl(jsonl_path):
     print()
 
     if orders:
-        print(f"Orders: {len(orders):,}")
-        for i, order in enumerate(sorted(orders), 1):
-            print(f"  {i}. {order}")
+        print(f"Order IDs (first 20):")
+        for i, oid in enumerate(sorted(orders)[:20], 1):
+            print(f"  {i}. {oid}")
+        if len(orders) > 20:
+            print(f"  ... and {len(orders) - 20} more")
         print()
 
-    # Show some examples
+    # Show some examples (identifiers)
     if families:
-        print(f"Sample families (first 10):")
-        for i, fam in enumerate(sorted(families)[:10], 1):
-            print(f"  {i}. {fam}")
+        print(f"Sample family IDs (first 10):")
+        for i, fid in enumerate(sorted(families)[:10], 1):
+            print(f"  {i}. {fid}")
         if len(families) > 10:
             print(f"  ... and {len(families) - 10} more")
         print()
 
     if species:
-        print(f"Sample species (first 10):")
-        for i, spec in enumerate(sorted(species)[:10], 1):
-            print(f"  {i}. {spec}")
+        print(f"Sample species IDs (first 10):")
+        for i, sid in enumerate(sorted(species)[:10], 1):
+            print(f"  {i}. {sid}")
         if len(species) > 10:
             print(f"  ... and {len(species) - 10} more")
 
