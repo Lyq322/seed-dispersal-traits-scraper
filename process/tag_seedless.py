@@ -1,18 +1,15 @@
 """
-Seedless plant taxa (orders) and script to tag rows in
-descriptions_text_by_source.jsonl. Writes a row-tags file (one line per row,
-JSON array of tags). This script sets exactly one of "seedless" or "has_seed"
-per row (overwriting any previous such tags) and merges with existing tags
-from the file; all other tags are preserved.
+Seedless plant taxa (orders) and script to tag rows in a descriptions JSONL.
+Sets exactly one of "seedless" or "has_seed" per row (overwriting any previous
+such tags) and merges with existing tags in each record's "tags" field; all
+other tags are preserved. Writes the updated records back to the JSONL (in
+place or to a separate file via --output).
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
-
-# Output: one line per row of descriptions_text_by_source.jsonl; each line is {"identifier": "<id>_<source_name>", "tags": [...]}.
-# Row identifier = original identifier + "_" + source_name (from descriptions_text_by_source / descriptions_by_source).
-ROW_TAGS_FILENAME = "tags.jsonl"
 
 # Tags this script owns; we remove any existing and set exactly one of seedless / has_seed.
 SEED_STATUS_TAGS = {"seedless", "has_seed"}
@@ -123,52 +120,45 @@ seedless_plant_taxa = {
 SEEDLESS_ORDERS = set(seedless_plant_taxa["order"])
 
 
-def _parse_tags_from_line(obj: list | dict) -> list[str]:
-    """Extract tag list from a line: either a JSON array (legacy) or object with 'tags' key."""
-    if isinstance(obj, list):
-        return obj
-    if isinstance(obj, dict):
-        return obj.get("tags", [])
+def _get_tags_from_record(record: dict) -> list[str]:
+    """Extract tag list from a record; ensure we return a list of strings."""
+    raw = record.get("tags")
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
     return []
 
 
-def _load_existing_tags(tags_path: Path) -> list[list[str]]:
-    """Load existing tag arrays from the row-tags file; return [] if file missing or empty."""
-    if not tags_path.exists():
-        return []
-    out = []
-    with open(tags_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                out.append([])
-                continue
-            try:
-                parsed = json.loads(line)
-                out.append(_parse_tags_from_line(parsed))
-            except json.JSONDecodeError:
-                out.append([])
-    return out
-
-
 def main():
-    repo_root = Path(__file__).resolve().parent.parent
-    input_path = repo_root / "data" / "processed" / "descriptions_text_by_source.jsonl"
-    tags_path = repo_root / "data" / "processed" / ROW_TAGS_FILENAME
+    parser = argparse.ArgumentParser(
+        description="Tag rows from a descriptions JSONL as seedless or has_seed; merge with existing tags."
+    )
+    parser.add_argument(
+        "input_jsonl",
+        type=Path,
+        help="Path to input JSONL (e.g. descriptions_text_by_source.jsonl)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Output JSONL path (default: overwrite input)",
+    )
+    args = parser.parse_args()
+    input_path = args.input_jsonl.resolve()
+    output_path = args.output.resolve() if args.output else input_path
 
     if not input_path.exists():
         print(f"Input file not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    existing_tags_per_row = _load_existing_tags(tags_path)
     seedless_count = 0
     has_seed_count = 0
     row_index = 0
+    records_out = []
 
-    with open(input_path, "r", encoding="utf-8") as fin, open(
-        tags_path, "w", encoding="utf-8"
-    ) as fout:
-        for line in fin:
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -176,26 +166,13 @@ def main():
                 record = json.loads(line)
             except json.JSONDecodeError as e:
                 print(f"Invalid JSON at line {row_index + 1}: {e}", file=sys.stderr)
-                existing = (
-                    existing_tags_per_row[row_index]
-                    if row_index < len(existing_tags_per_row)
-                    else []
-                )
-                merged = [t for t in existing if t not in SEED_STATUS_TAGS]
-                fout.write(
-                    json.dumps({"identifier": None, "tags": merged}) + "\n"
-                )
-                row_index += 1
-                continue
+                record = {}
+            row_index += 1
 
-            existing = (
-                existing_tags_per_row[row_index]
-                if row_index < len(existing_tags_per_row)
-                else []
-            )
+            existing = _get_tags_from_record(record)
             merged = [t for t in existing if t not in SEED_STATUS_TAGS]
 
-            order_name = record.get("order_name")
+            order_name = record.get("order_name") if isinstance(record, dict) else None
             if order_name is not None and order_name in SEEDLESS_ORDERS:
                 merged.append("seedless")
                 seedless_count += 1
@@ -203,19 +180,20 @@ def main():
                 merged.append("has_seed")
                 has_seed_count += 1
 
-            # Row identifier = original identifier + "_" + source_name
-            orig_id = record.get("identifier") or ""
-            source_name = (record.get("source_name") or "").strip() or "unknown"
-            row_identifier = f"{orig_id}_{source_name}" if orig_id else source_name
-            fout.write(
-                json.dumps({"identifier": row_identifier, "tags": merged}) + "\n"
-            )
-            row_index += 1
+            if isinstance(record, dict):
+                record["tags"] = merged
+            else:
+                record = {"tags": merged}
+            records_out.append(record)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        for record in records_out:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     print(f"Total rows: {row_index}")
     print(f"Rows tagged seedless: {seedless_count}")
     print(f"Rows tagged has_seed: {has_seed_count}")
-    print(f"Row tags file: {tags_path}")
+    print(f"Output: {output_path}")
 
 
 if __name__ == "__main__":

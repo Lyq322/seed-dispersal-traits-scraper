@@ -14,7 +14,6 @@ from flask import Flask, jsonify, request, send_from_directory
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data" / "processed"
 DESCRIPTIONS_PATH = DATA_DIR / "descriptions_text_by_source.jsonl"
-TAGS_PATH = DATA_DIR / "tags.jsonl"
 
 # Global index state (filled by background thread)
 _index_ready = False
@@ -35,30 +34,9 @@ def row_identifier(record):
 def build_index():
     global _index_ready, _index_error, _meta_list, _row_id_to_tags, _filter_options
     try:
-        # Load tags: row_id -> set(tags)
         _row_id_to_tags.clear()
-        if TAGS_PATH.exists():
-            with open(TAGS_PATH, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                        ident = obj.get("identifier")
-                        tags = set(obj.get("tags") or [])
-                        if ident is not None:
-                            _row_id_to_tags[ident] = tags
-                    except json.JSONDecodeError:
-                        pass
-        all_tags = set()
-        for tags in _row_id_to_tags.values():
-            all_tags.update(tags)
-        _filter_options["tags"] = sorted(all_tags)
-
-        # Build description index: offset + metadata per line
         _meta_list.clear()
-        orders, families, sources = set(), set(), set()
+        orders, families, sources, all_tags = set(), set(), set(), set()
         if not DESCRIPTIONS_PATH.exists():
             _index_error = f"Descriptions file not found: {DESCRIPTIONS_PATH}"
             return
@@ -83,6 +61,9 @@ def build_index():
                 source_name = (record.get("source_name") or "").strip() or None
                 text = (record.get("descriptions_text") or "").strip()
                 word_count = len(text.split()) if text else 0
+                tags = set(record.get("tags") or [])
+                _row_id_to_tags[row_id] = tags
+                all_tags.update(tags)
                 if order_name:
                     orders.add(order_name)
                 if family_name:
@@ -102,6 +83,7 @@ def build_index():
         _filter_options["orders"] = sorted(orders)
         _filter_options["families"] = sorted(families)
         _filter_options["sources"] = sorted(sources)
+        _filter_options["tags"] = sorted(all_tags)
         _index_ready = True
         _index_error = None
     except Exception as e:

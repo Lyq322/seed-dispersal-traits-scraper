@@ -1,8 +1,8 @@
 """
-Print sources and occurrence counts per language from data/processed/tags.jsonl.
+Print sources and occurrence counts per language from a descriptions JSONL.
 
-Each line in tags.jsonl has: {"identifier": "<wfo_id>_<source_name>", "tags": [...]}.
-Language tags are of the form lang_<code> (e.g. lang_en, lang_de).
+Reads records with a "tags" field; language tags are of the form lang_<code>
+(e.g. lang_en, lang_de). Source is taken from the "source_name" field.
 """
 
 import argparse
@@ -14,38 +14,30 @@ from pathlib import Path
 LANG_TAG_PREFIX = "lang_"
 
 
-def extract_source(identifier):
-    """Extract source name from identifier (part after the first '_')."""
-    if not identifier or not isinstance(identifier, str):
-        return "unknown"
-    parts = identifier.split("_", 1)
-    return parts[1] if len(parts) > 1 else identifier
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Print sources and counts per language from tags.jsonl."
+        description="Print sources and counts per language from a descriptions JSONL (with 'tags' field)."
     )
     parser.add_argument(
-        "tags_jsonl",
+        "input_jsonl",
         nargs="?",
         default=None,
-        help="Path to tags JSONL (default: data/processed/tags.jsonl)",
+        help="Path to descriptions JSONL (default: data/processed/descriptions_text_by_source.jsonl)",
     )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
     data_dir = repo_root / "data" / "processed"
-    tags_path = Path(args.tags_jsonl) if args.tags_jsonl else data_dir / "tags.jsonl"
+    input_path = Path(args.input_jsonl) if args.input_jsonl else data_dir / "descriptions_text_by_source.jsonl"
 
-    if not tags_path.exists():
-        print(f"Error: File not found: {tags_path}")
+    if not input_path.exists():
+        print(f"Error: File not found: {input_path}")
         return 1
 
     # lang -> source -> count
     by_lang = defaultdict(lambda: defaultdict(int))
 
-    with open(tags_path, "r", encoding="utf-8") as f:
+    with open(input_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -55,9 +47,10 @@ def main():
             except json.JSONDecodeError as e:
                 print(f"Warning: Skipping invalid JSON: {e}")
                 continue
-            identifier = obj.get("identifier")
+            if not isinstance(obj, dict):
+                continue
+            source = (obj.get("source_name") or "").strip() or "unknown"
             tags = obj.get("tags") or []
-            source = extract_source(identifier)
             for tag in tags:
                 if isinstance(tag, str) and tag.startswith(LANG_TAG_PREFIX):
                     lang = tag[len(LANG_TAG_PREFIX) :]

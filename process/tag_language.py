@@ -1,10 +1,7 @@
 """
-Stream through descriptions_text_by_source.jsonl, detect language from
-descriptions_text, and add language tags to the corresponding rows in
-the tags JSONL. Rows are aligned by line order (same row index).
-
-Identifier format: original identifier + "_" + source_name (same as
-filter_seedless.py), e.g. "wfo-7000000004_Flora of North America @ efloras.org".
+Stream through a descriptions JSONL, detect language from descriptions_text,
+and add/update language tags in each record's "tags" field. Writes the
+updated records back (in place or to a file via -o).
 
 On each run (including re-runs): first remove all language-related tags
 (tags starting with "lang_") from each row, then append the updated
@@ -78,13 +75,6 @@ def merge_language_tag(existing_tags, lang_code):
     return tags
 
 
-def row_identifier(record):
-    """Composite row id: identifier + '_' + source_name (same as filter_seedless)."""
-    orig_id = (record.get("identifier") or "").strip()
-    source_name = (record.get("source_name") or "").strip() or "unknown"
-    return f"{orig_id}_{source_name}" if orig_id else source_name
-
-
 def _progress_iter(sequence, desc, total, use_tqdm):
     """Wrap sequence with tqdm if use_tqdm else simple progress every 10k rows."""
     if use_tqdm:
@@ -92,58 +82,21 @@ def _progress_iter(sequence, desc, total, use_tqdm):
     return sequence
 
 
-def build_row_languages(descriptions_path, progress=False):
-    """
-    Read descriptions_text_by_source.jsonl and return an ordered list of
-    (row_identifier, lang_code, source_name) per row. row_identifier = identifier + "_" + source_name.
-    """
-    result = []
-    with open(descriptions_path, "r", encoding="utf-8") as f:
-        lines = [ln for ln in f if ln.strip()]
-    n = len(lines)
-    last_pct = -1
-    for i, line in enumerate(_progress_iter(lines, "Pass 1 (detect language)", n, progress and HAS_TQDM)):
-        line = line.strip()
-        if not line:
-            continue
-        if progress and not HAS_TQDM and n > 0:
-            pct = (100 * (i + 1)) // n
-            if pct >= last_pct + 10:
-                print(f"  Pass 1: {i + 1}/{n} ({pct}%)", file=sys.stderr)
-                last_pct = pct
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        row_id = row_identifier(record)
-        source_name = (record.get("source_name") or "").strip() or "unknown"
-        text = record.get("descriptions_text") or record.get("raw_description_html") or ""
-        lang_code = detect_language(text)
-        result.append((row_id, lang_code, source_name))
-    return result
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Add language tags to tags.jsonl from descriptions_text in descriptions_text_by_source.jsonl."
+        description="Add language tags to each record's 'tags' field in a descriptions JSONL."
     )
     parser.add_argument(
-        "descriptions_jsonl",
+        "input_jsonl",
         nargs="?",
         default=None,
-        help="Path to descriptions_text_by_source.jsonl (default: data/processed/descriptions_text_by_source.jsonl)",
-    )
-    parser.add_argument(
-        "tags_jsonl",
-        nargs="?",
-        default=None,
-        help="Path to tags JSONL to update (default: data/processed/tags.jsonl)",
+        help="Path to descriptions JSONL (default: data/processed/descriptions_text_by_source.jsonl)",
     )
     parser.add_argument(
         "-o", "--output",
         type=str,
         default=None,
-        help="Output path (default: overwrite tags_jsonl; use this to write to a different file)",
+        help="Output path (default: overwrite input)",
     )
     parser.add_argument(
         "-n", "--dry-run",
@@ -165,142 +118,110 @@ def main():
 
     repo_root = Path(__file__).resolve().parent.parent
     data_dir = repo_root / "data" / "processed"
-    descriptions_path = Path(args.descriptions_jsonl) if args.descriptions_jsonl else data_dir / "descriptions_text_by_source.jsonl"
-    tags_path = Path(args.tags_jsonl) if args.tags_jsonl else data_dir / "tags.jsonl"
-    out_path = Path(args.output) if args.output else tags_path
+    input_path = Path(args.input_jsonl) if args.input_jsonl else data_dir / "descriptions_text_by_source.jsonl"
+    input_path = input_path.resolve()
+    out_path = Path(args.output).resolve() if args.output else input_path
 
-    if not descriptions_path.exists():
-        print(f"Descriptions file not found: {descriptions_path}", file=sys.stderr)
-        sys.exit(1)
-    if not tags_path.exists():
-        print(f"Tags file not found: {tags_path}", file=sys.stderr)
+    if not input_path.exists():
+        print(f"Input file not found: {input_path}", file=sys.stderr)
         sys.exit(1)
     if not HAS_LANGDETECT:
         print("Warning: langdetect not installed. Install with: pip install langdetect", file=sys.stderr)
         print("All rows will get lang_unknown.", file=sys.stderr)
 
-    # Pass 1: ordered list of (row_identifier, lang) per description row
-    if not show_progress:
-        print("Pass 1: reading descriptions and detecting language...", file=sys.stderr)
-    row_languages = build_row_languages(descriptions_path, progress=show_progress)
-    total_descriptions = len(row_languages)
+    # Normalize overwrite rules
+    def normalize_rule(r):
+        if len(r) == 2:
+            return (r[0], None, r[1])
+        return (r[0], r[1] or None, r[2])
 
-    # Overwrite: for each rule (wrong_lang, source_or_none, correct_lang), change matching rows.
-    # source None or "" means apply to all sources with that wrong language.
-    if OVERWRITE_RULES:
-        def normalize_rule(r):
-            if len(r) == 2:
-                return (r[0], None, r[1])  # (wrong_lang, correct_lang) -> all sources
-            return (r[0], r[1] or None, r[2])
+    rules = [normalize_rule(r) for r in OVERWRITE_RULES] if OVERWRITE_RULES else []
+    overwritten_by_rule = {r: 0 for r in rules}
 
-        rules = [normalize_rule(r) for r in OVERWRITE_RULES]
-        overwritten_by_rule = {r: 0 for r in rules}
-        new_row_languages = []
-        for row_id, lang_code, source_name in row_languages:
-            for wrong, source, correct in rules:
-                if (lang_code or "").lower() != wrong:
-                    continue
-                if source is None or source == "":
-                    match = True  # all sources for this wrong language
-                else:
-                    match = source_name == source
-                if match:
-                    lang_code = correct
-                    overwritten_by_rule[(wrong, source, correct)] += 1
-                    break
-            new_row_languages.append((row_id, lang_code, source_name))
-        row_languages = new_row_languages
-        if not show_progress:
-            for (wrong, source, correct), count in overwritten_by_rule.items():
-                if count:
-                    scope = "all sources" if source is None else f"source {source!r}"
-                    print(f"  Overwrite: {count} rows ({scope}) {wrong} -> {correct}.", file=sys.stderr)
-
+    with open(input_path, "r", encoding="utf-8") as f:
+        lines = [ln for ln in f if ln.strip()]
+    n = len(lines)
     by_lang = {}
-    for (_, lang, _) in row_languages:
-        by_lang[lang] = by_lang.get(lang, 0) + 1
-    if not show_progress:
-        print(f"  {total_descriptions} description rows.", file=sys.stderr)
+    records_out = []
+    last_pct = -1
 
-    tmp_path = None
-    if args.dry_run:
-        out_file = None
-    else:
-        if out_path.resolve() == tags_path.resolve():
-            tmp_path = tags_path.with_suffix(".jsonl.tmp")
-            out_file = open(tmp_path, "w", encoding="utf-8")
-        else:
-            out_file = open(out_path, "w", encoding="utf-8")
+    for i, line in enumerate(_progress_iter(lines, "Detect language & merge tags", n, show_progress)):
+        line = line.strip()
+        if not line:
+            continue
+        if show_progress and not HAS_TQDM and n > 0:
+            pct = (100 * (i + 1)) // n
+            if pct >= last_pct + 10:
+                print(f"  {i + 1}/{n} ({pct}%)", file=sys.stderr)
+                last_pct = pct
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON at line {i + 1}: {e}", file=sys.stderr)
+            records_out.append({})
+            continue
+        if not isinstance(record, dict):
+            records_out.append({"tags": []})
+            continue
 
-    try:
-        if not show_progress:
-            print("Pass 2: reading tags and writing with language tags...", file=sys.stderr)
-        row_index = 0
-        tag_lines = []
-        with open(tags_path, "r", encoding="utf-8") as f_tags:
-            for line in f_tags:
-                tag_lines.append(line)
-        desc_index = 0  # index into row_languages (one per description row)
-        n_tags = len(tag_lines)
-        it = _progress_iter(tag_lines, "Pass 2 (write tags)", n_tags, show_progress)
-        last_pct2 = -1
-        for ti, line_tags in enumerate(it):
-            if show_progress and not HAS_TQDM and n_tags > 0:
-                pct = (100 * (ti + 1)) // n_tags
-                if pct >= last_pct2 + 10:
-                    print(f"  Pass 2: {ti + 1}/{n_tags} ({pct}%)", file=sys.stderr)
-                    last_pct2 = pct
-            line_tags = line_tags.strip()
-            row_index += 1
-            if not line_tags:
-                if not args.dry_run and out_file is not None:
-                    out_file.write("\n")
+        source_name = (record.get("source_name") or "").strip() or "unknown"
+        text = record.get("descriptions_text") or record.get("raw_description_html") or ""
+        lang_code = detect_language(text)
+
+        # Apply overwrite rules
+        for wrong, source, correct in rules:
+            if (lang_code or "").lower() != wrong:
                 continue
-            try:
-                tag_obj = json.loads(line_tags)
-            except json.JSONDecodeError as e:
-                if not show_progress:
-                    print(f"Tags line {row_index}: JSON error: {e}", file=sys.stderr)
-                if not args.dry_run and out_file is not None:
-                    out_file.write(line_tags + "\n")
-                continue
-            existing = tag_obj.get("tags")
-            if existing is None:
-                existing = []
-
-            # Match by line order; use composite row_identifier from Pass 1
-            if desc_index < len(row_languages):
-                row_id, lang_code, _ = row_languages[desc_index]
-                desc_index += 1
+            if source is None or source == "":
+                match = True
             else:
-                row_id = tag_obj.get("identifier")
-                lang_code = "unknown"
-            merged = merge_language_tag(existing, lang_code)
-            out_obj = {"identifier": row_id, "tags": merged}
-            if args.verbose:
-                print(f"  {row_id} -> {lang_code}", file=sys.stderr)
-            if not args.dry_run and out_file is not None:
-                out_file.write(json.dumps(out_obj, ensure_ascii=False) + "\n")
+                match = source_name == source
+            if match:
+                lang_code = correct
+                overwritten_by_rule[(wrong, source, correct)] += 1
+                break
 
-    finally:
-        if out_file is not None:
-            out_file.close()
-            if not args.dry_run and tmp_path is not None and tmp_path.exists():
-                tmp_path.replace(tags_path)
+        by_lang[lang_code] = by_lang.get(lang_code, 0) + 1
+        existing = record.get("tags")
+        if existing is None:
+            existing = []
+        elif not isinstance(existing, list):
+            existing = []
+        merged = merge_language_tag(existing, lang_code)
+        record["tags"] = merged
+        records_out.append(record)
 
-    if row_index != total_descriptions and not show_progress:
-        print(f"Warning: tags has {row_index} rows, descriptions had {total_descriptions}.", file=sys.stderr)
+        if args.verbose:
+            row_id = (record.get("identifier") or "") + "_" + source_name
+            print(f"  {row_id} -> {lang_code}", file=sys.stderr)
+
+    total = len(records_out)
     if not show_progress:
-        print(f"Processed {row_index} tag rows.", file=sys.stderr)
-    print("By language (from descriptions):", file=sys.stderr)
+        for (wrong, source, correct), count in overwritten_by_rule.items():
+            if count:
+                scope = "all sources" if source is None else f"source {source!r}"
+                print(f"  Overwrite: {count} rows ({scope}) {wrong} -> {correct}.", file=sys.stderr)
+        print(f"  {total} rows.", file=sys.stderr)
+
+    if not args.dry_run:
+        use_temp = out_path.resolve() == input_path.resolve()
+        if use_temp:
+            write_path = input_path.with_suffix(".jsonl.tmp")
+        else:
+            write_path = out_path
+        with open(write_path, "w", encoding="utf-8") as f:
+            for record in records_out:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if use_temp and write_path.exists():
+            write_path.replace(input_path)
+
+    print("By language:", file=sys.stderr)
     for lang in sorted(by_lang.keys()):
         count = by_lang[lang]
-        pct = 100.0 * count / total_descriptions if total_descriptions else 0
+        pct = 100.0 * count / total if total else 0
         print(f"  {lang:12}  {count:6}  ({pct:5.1f}%)", file=sys.stderr)
-    if not args.dry_run and out_path.resolve() == tags_path.resolve():
-        print(f"Updated: {tags_path}", file=sys.stderr)
-    elif not args.dry_run:
-        print(f"Written: {out_path}", file=sys.stderr)
+    if not args.dry_run:
+        print(f"Output: {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,9 @@ import sys
 import re
 import logging
 from pathlib import Path
-from hashlib import md5
+
+# Max files per batch folder (avoids huge single directories)
+BATCH_SIZE = 10_000
 
 # Setup logging
 LOG_DIR = Path("logs")
@@ -118,12 +120,25 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
     records_with_text = 0
     records_without_text = 0
     duplicate_files = 0
+    batch_index = 0
+    files_in_current_batch = 0
+    current_batch_dir = None
 
     # Create a mapping file to track line numbers to filenames
     mapping_file = output_dir / "mapping.jsonl"
 
+    def get_batch_dir():
+        nonlocal batch_index, files_in_current_batch, current_batch_dir
+        if current_batch_dir is None or files_in_current_batch >= BATCH_SIZE:
+            if files_in_current_batch >= BATCH_SIZE:
+                batch_index += 1
+                files_in_current_batch = 0
+            current_batch_dir = output_dir / f"batch_{batch_index:04d}"
+            current_batch_dir.mkdir(parents=True, exist_ok=True)
+        return current_batch_dir
+
     print(f"Converting {jsonl_path} to txt files...")
-    print(f"Output directory: {output_dir}")
+    print(f"Output directory: {output_dir} (batch size: {BATCH_SIZE:,})")
     print(f"Log file: {LOG_FILE}")
     print("-" * 60)
     logger.info(f"Starting conversion: input={jsonl_path}, output={output_dir}")
@@ -144,9 +159,13 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
                 if descriptions_text:
                     records_with_text += 1
 
-                    # Create unique filename
+                    # Create unique filename and choose batch folder
                     filename = create_unique_filename(record, line_num)
-                    filepath = output_dir / filename
+                    batch_dir = get_batch_dir()
+                    filepath = batch_dir / filename
+
+                    # Relative path for mapping (includes batch subfolder)
+                    relative_path = f"{batch_dir.name}/{filename}"
 
                     # Check if file already exists
                     if filepath.exists():
@@ -163,11 +182,12 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
                         txtfile.write(descriptions_text)
 
                     files_created += 1
+                    files_in_current_batch += 1
 
-                    # Write mapping entry: line number -> filename -> record identifier info
+                    # Write mapping entry: line number -> path -> record identifier info
                     mapping_entry = {
                         'line_number': line_num,
-                        'filename': filename,
+                        'filename': relative_path,
                         'identifier': record.get('identifier'),
                         'source_name': record.get('source_name'),
                         'source_url': record.get('source_url'),
@@ -205,6 +225,7 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
     print(f"Records with descriptions_text: {records_with_text:,}")
     print(f"Records without descriptions_text: {records_without_text:,}")
     print(f"Txt files created: {files_created:,}")
+    print(f"Batch folders used: {batch_index + 1:,}")
     if duplicate_files > 0:
         print(f"Duplicate files skipped: {duplicate_files:,}")
     print(f"Output directory: {output_dir}")
@@ -214,7 +235,7 @@ def convert_jsonl_to_txt_files(jsonl_path, output_dir):
 
     logger.info(f"Conversion completed: total_records={total_records}, "
                 f"with_text={records_with_text}, without_text={records_without_text}, "
-                f"files_created={files_created}, duplicate_files={duplicate_files}")
+                f"files_created={files_created}, batches={batch_index + 1}, duplicate_files={duplicate_files}")
 
     return True
 
