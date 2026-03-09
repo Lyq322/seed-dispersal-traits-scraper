@@ -139,7 +139,6 @@ def save_species_page(url, wfo_id, html_content, item):
         "family_name": family_name,
         "genus_name": genus_name,
         "species_name": species_name,
-        "subspecies": None,
         "source": "World Flora Online",
         "identifier": wfo_id,
         "page_type": "species",

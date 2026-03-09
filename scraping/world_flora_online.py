@@ -183,7 +183,7 @@ def extract_text_from_html(html_content):
 
 
 def save_page(url, page_type, identifier, html_content, order_name=None, family_name=None,
-              genus_name=None, species_name=None, subspecies=None):
+              genus_name=None, species_name=None):
     """Save raw HTML and text for a page as JSONL (thread-safe)."""
     try:
         text_content = extract_text_from_html(html_content)
@@ -193,7 +193,6 @@ def save_page(url, page_type, identifier, html_content, order_name=None, family_
             "family_name": family_name,
             "genus_name": genus_name,
             "species_name": species_name,
-            "subspecies": subspecies,
             "source": "World Flora Online",
             "identifier": identifier,
             "page_type": page_type,

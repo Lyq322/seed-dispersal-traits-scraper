@@ -199,7 +199,6 @@ def descriptions():
                     "family_name": meta["family_name"],
                     "genus_name": meta["genus_name"],
                     "species_name": meta["species_name"],
-                    "subspecies": record.get("subspecies"),
                     "source_name": meta["source_name"],
                     "descriptions_text": text,
                     "preview": preview_text,

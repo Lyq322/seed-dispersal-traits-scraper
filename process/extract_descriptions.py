@@ -144,7 +144,6 @@ def extract_descriptions_from_html(raw_html, original_record):
                     'family_name': original_record.get('family_name'),
                     'genus_name': original_record.get('genus_name'),
                     'species_name': original_record.get('species_name'),
-                    'subspecies': original_record.get('subspecies'),
                     'timestamp': original_record.get('timestamp'),
 
                     # New fields
