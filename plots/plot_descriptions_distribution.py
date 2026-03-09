@@ -1,5 +1,6 @@
 """
 Script to plot the distribution of number of descriptions per species.
+Filters species by page_type.
 Includes species with 0 descriptions from world_flora_online_complete.jsonl.
 """
 
