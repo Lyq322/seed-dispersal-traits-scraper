@@ -8,70 +8,29 @@ put the x selected files into y batch subfolders (batch_0000, batch_0001, ...)
 under the destination.
 
 Supports optional --tag (one or more) to filter by the "tags" field in a descriptions JSONL
-(e.g. --tag has_seed --tag lang_es); identifier must have ALL of the tags.
-Uses a descriptions JSONL where each record has "identifier", "source_name", and "tags".
-
-Row identity is identifier + "_" + source_name. Txt filenames use a sanitized prefix before
-_NNNNNN: same id and source with spaces/special chars replaced by underscores. Matching
-uses that sanitized prefix so tag filters work correctly.
+(e.g. --tag has_seed --tag lang_es); record must have ALL of the tags.
+Uses the "txt_filename" field in each record (written by jsonl_to_txt_files.py) to match
+files: only .txt files whose path relative to a source dir equals a record's txt_filename are included.
 """
 
 import argparse
 import json
 import random
-import re
 import shutil
 import sys
 from pathlib import Path
 
 
-def _sanitize_filename(text, max_length=100):
-    """Match jsonl_to_txt_files sanitization so we can match tags identifiers to txt filename prefixes."""
-    if not text or not isinstance(text, str):
-        return "unknown"
-    s = re.sub(r'[<>:"/\\|?*\s]+', '_', text.strip())
-    s = re.sub(r'[^\w\-_\.]', '', s)
-    s = re.sub(r'_+', '_', s).strip('_')
-    if len(s) > max_length:
-        s = s[:max_length]
-    return s or "unknown"
 
-
-def _txt_stem_prefix(stem):
+def load_allowed_txt_filenames(descriptions_jsonl_path, required_tags):
     """
-    Return the part of a txt filename stem that corresponds to the composite identifier.
-    Stem is like wfo-7000000004_Flora_of_North_America_efloras.org_000001 -> prefix is before _\\d{6}.
+    Load the set of txt_filename values (e.g. batch_0000/name.txt) for records
+    that have ALL required_tags and a non-empty txt_filename field.
     """
-    return re.sub(r"_\d{6}$", "", stem) if stem else ""
-
-
-def _allowed_prefix_from_tags_identifier(composite_id):
-    """
-    Convert composite identifier (identifier_source_name) to the same prefix form used in txt filenames.
-    composite_id is 'identifier_source_name' (e.g. wfo-7000000004_Flora of North America @ efloras.org).
-    Txt files are named sanitize(id)_sanitize(source)_line.txt with 50-char truncation each.
-    """
-    if not composite_id or "_" not in composite_id:
-        return _sanitize_filename(composite_id or "", 50)
-    ident, _, source = composite_id.partition("_")
-    safe_id = _sanitize_filename(ident, 50)
-    safe_source = _sanitize_filename(source, 50)
-    if not safe_source or safe_source == "unknown":
-        return f"{safe_id}"
-    return f"{safe_id}_{safe_source}"
-
-
-def load_tagged_identifiers(descriptions_jsonl_path, tag):
-    """
-    Load the set of txt-filename prefixes that have the given tag.
-    Reads a descriptions JSONL; each record has identifier, source_name, and tags.
-    We build composite id = identifier + '_' + source_name and convert to the
-    same sanitized prefix form used in txt filenames so matching works.
-    """
-    allowed_prefixes = set()
     path = Path(descriptions_jsonl_path)
     if not path.exists():
         return None
+    allowed = set()
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -81,16 +40,18 @@ def load_tagged_identifiers(descriptions_jsonl_path, tag):
                 obj = json.loads(line)
                 if not isinstance(obj, dict):
                     continue
-                tags = obj.get("tags") or []
-                if tag not in tags:
+                tags = set(obj.get("tags") or [])
+                if not all(t in tags for t in required_tags):
                     continue
-                ident = (obj.get("identifier") or "").strip()
-                source_name = (obj.get("source_name") or "").strip() or "unknown"
-                composite_id = f"{ident}_{source_name}" if ident else source_name
-                allowed_prefixes.add(_allowed_prefix_from_tags_identifier(composite_id))
+                txt_fn = obj.get("txt_filename")
+                if txt_fn and isinstance(txt_fn, str):
+                    txt_fn = txt_fn.strip()
+                    if txt_fn:
+                        # Normalize to forward slashes for consistent matching
+                        allowed.add(txt_fn.replace("\\", "/"))
             except json.JSONDecodeError:
                 continue
-    return allowed_prefixes
+    return allowed
 
 
 def random_select_txt_files(
@@ -113,7 +74,7 @@ def random_select_txt_files(
                      under dest_dir and distribute selected files across them (round-robin).
         tags: Optional list of tags to filter by (e.g. ["has_seed", "has_fruit"]);
               only txt files whose row has ALL of these tags in the descriptions JSONL are considered.
-        tags_jsonl: Path to descriptions JSONL with "identifier", "source_name", and "tags" per record.
+        tags_jsonl: Path to descriptions JSONL with "tags" and "txt_filename" per record (from jsonl_to_txt_files).
 
     Returns:
         True if successful
@@ -128,35 +89,45 @@ def random_select_txt_files(
 
     # Collect .txt from all source dirs and subfolders; use set of resolved paths to dedupe
     seen = set()
-    txt_files = []
+    txt_files = []  # list of (source_dir, path) so we can compute relative path
     for source_dir in source_dirs:
         for f in source_dir.rglob("*.txt"):
             if f.is_file():
                 key = f.resolve()
                 if key not in seen:
                     seen.add(key)
-                    txt_files.append(f)
+                    txt_files.append((source_dir, f))
 
     if not txt_files:
         print(f"Error: No .txt files found under {[str(d) for d in source_dirs]}")
         return False
 
+    total_txt_files = len(txt_files)
+
     if tags and tags_jsonl:
-        allowed_sets = []
-        for tag in tags:
-            ids = load_tagged_identifiers(tags_jsonl, tag)
-            if ids is None:
-                print(f"Error: Descriptions JSONL not found: {tags_jsonl}")
-                return False
-            allowed_sets.append(ids)
-        # Identifier must have ALL tags: intersection of the sets
-        allowed_identifiers = set.intersection(*allowed_sets) if allowed_sets else set()
-        # Keep only txt files whose filename prefix matches a tagged row (composite id -> same prefix as filename)
-        txt_files = [f for f in txt_files if _txt_stem_prefix(f.stem) in allowed_identifiers]
-        if not txt_files:
-            print(f"Error: No .txt files found with all tags {tags!r} in descriptions JSONL {tags_jsonl}")
+        allowed_txt_filenames = load_allowed_txt_filenames(tags_jsonl, tags)
+        if allowed_txt_filenames is None:
+            print(f"Error: Descriptions JSONL not found: {tags_jsonl}")
             return False
-        print(f"Filtered to {len(txt_files)} files with all tags {tags}")
+
+        # Keep only files whose path relative to their source_dir is in allowed (txt_filename from JSONL)
+        filtered = []
+        for source_dir, f in txt_files:
+            try:
+                rel = f.resolve().relative_to(Path(source_dir).resolve())
+            except ValueError:
+                continue
+            rel_posix = rel.as_posix()
+            if rel_posix in allowed_txt_filenames:
+                filtered.append((source_dir, f))
+        txt_files = filtered
+        if not txt_files:
+            print(f"Error: No .txt files found with all tags {tags!r} (txt_filename in JSONL)")
+            return False
+        print(f"Filtered to {len(txt_files):,} files with all tags {tags} ({len(txt_files):,} of {total_txt_files:,} total)")
+
+    # Drop source_dir for the rest of the function (we only need the file path)
+    txt_files = [f for _, f in txt_files]
 
     if num_files > len(txt_files):
         print(f"Warning: Requested {num_files} files but only {len(txt_files)} available. Selecting all.")
