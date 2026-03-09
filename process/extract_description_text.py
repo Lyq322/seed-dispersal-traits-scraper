@@ -1,11 +1,14 @@
 """
 Script to extract description text from raw_description_html in descriptions_by_source.jsonl.
-Converts HTML structure to plain text.
+Converts HTML structure to plain text and adds a 'descriptions_text' field to each record
+in the existing input JSONL file (modifies in place).
 """
 
 import json
 import sys
 import logging
+import tempfile
+import os
 from pathlib import Path
 from bs4 import BeautifulSoup
 
@@ -130,89 +133,99 @@ def extract_text_outside_span(b_tag):
     return text if text else None
 
 
-def process_jsonl(input_path, output_path):
+def process_jsonl(input_path):
     """
-    Process JSONL file and extract description text.
+    Process JSONL file in place: add 'descriptions_text' to each record.
+
+    Writes to a temporary file first, then replaces the input file on success.
 
     Args:
-        input_path: Path to input JSONL file
-        output_path: Path to output JSONL file
+        input_path: Path to input JSONL file (will be modified in place)
     """
     input_path = Path(input_path)
-    output_path = Path(output_path)
 
     if not input_path.exists():
         print(f"Error: File not found: {input_path}")
         return False
-
-    # Create output directory if it doesn't exist
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     total_input_records = 0
     total_output_records = 0
     records_with_text = 0
     records_without_text = 0
 
-    print(f"Processing {input_path}...")
-    print(f"Output will be written to {output_path}")
+    print(f"Processing {input_path} (modifying in place)...")
     print(f"Log file: {LOG_FILE}")
     print("-" * 60)
-    logger.info(f"Starting processing: input={input_path}, output={output_path}")
+    logger.info(f"Starting processing: input={input_path} (in place)")
 
-    with open(input_path, 'r', encoding='utf-8') as infile, \
-         open(output_path, 'w', encoding='utf-8') as outfile:
+    # Write to temp file in same directory so we can replace atomically
+    fd, temp_path = tempfile.mkstemp(
+        suffix='.jsonl',
+        prefix='extract_description_text_',
+        dir=input_path.parent,
+        text=True
+    )
 
-        for line_num, line in enumerate(infile, 1):
-            if not line.strip():
-                continue
+    try:
+        with open(input_path, 'r', encoding='utf-8') as infile, \
+             open(fd, 'w', encoding='utf-8') as outfile:
 
-            try:
-                record = json.loads(line)
-                total_input_records += 1
-
-                raw_description_html = record.get('raw_description_html')
-                if not raw_description_html:
-                    identifier = record.get('identifier', 'unknown')
-                    logger.warning(f"No raw_description_html field - identifier: {identifier}")
-                    records_without_text += 1
-                    # Still write the record without descriptions_text
-                    record['descriptions_text'] = None
-                    outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
-                    total_output_records += 1
+            for line_num, line in enumerate(infile, 1):
+                if not line.strip():
                     continue
 
-                # Extract description text
-                descriptions_text = extract_text_from_description_html(raw_description_html)
+                try:
+                    record = json.loads(line)
+                    total_input_records += 1
 
-                # Add descriptions_text to record
-                record['descriptions_text'] = descriptions_text
+                    raw_description_html = record.get('raw_description_html')
+                    if not raw_description_html:
+                        identifier = record.get('identifier', 'unknown')
+                        logger.warning(f"No raw_description_html field - identifier: {identifier}")
+                        records_without_text += 1
+                        record['descriptions_text'] = None
+                        outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
+                        total_output_records += 1
+                        continue
 
-                if descriptions_text:
-                    records_with_text += 1
-                else:
-                    records_without_text += 1
-                    identifier = record.get('identifier', 'unknown')
-                    logger.warning(f"No text extracted from HTML - identifier: {identifier}")
+                    descriptions_text = extract_text_from_description_html(raw_description_html)
+                    record['descriptions_text'] = descriptions_text
 
-                # Write the updated record
-                outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
-                total_output_records += 1
+                    if descriptions_text:
+                        records_with_text += 1
+                    else:
+                        records_without_text += 1
+                        identifier = record.get('identifier', 'unknown')
+                        logger.warning(f"No text extracted from HTML - identifier: {identifier}")
 
-                # Progress indicator
-                if line_num % 1000 == 0:
-                    print(f"  Processed {line_num:,} records, "
-                          f"extracted text from {records_with_text:,}...", end='\r')
+                    outfile.write(json.dumps(record, ensure_ascii=False) + '\n')
+                    total_output_records += 1
 
-            except json.JSONDecodeError as e:
-                print(f"\nWarning: Error parsing line {line_num}: {e}")
-                logger.warning(f"Error parsing line {line_num}: {e}")
-                continue
-            except Exception as e:
-                print(f"\nWarning: Error processing line {line_num}: {e}")
-                logger.warning(f"Error processing line {line_num}: {e}")
-                continue
+                    if line_num % 1000 == 0:
+                        print(f"  Processed {line_num:,} records, "
+                              f"extracted text from {records_with_text:,}...", end='\r')
 
-    print()  # New line after progress indicator
+                except json.JSONDecodeError as e:
+                    print(f"\nWarning: Error parsing line {line_num}: {e}")
+                    logger.warning(f"Error parsing line {line_num}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"\nWarning: Error processing line {line_num}: {e}")
+                    logger.warning(f"Error processing line {line_num}: {e}")
+                    continue
+
+        print()  # New line after progress indicator
+
+        # Replace input file with temp file
+        os.replace(temp_path, input_path)
+        temp_path = None  # so finally doesn't remove it
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
     # Print statistics
     print("-" * 60)
@@ -222,7 +235,7 @@ def process_jsonl(input_path, output_path):
     print(f"Records with extracted text: {records_with_text:,}")
     print(f"Records without extracted text: {records_without_text:,}")
     print(f"Total output records: {total_output_records:,}")
-    print(f"Output file: {output_path}")
+    print(f"File modified in place: {input_path}")
     print(f"Log file: {LOG_FILE}")
     print("-" * 60)
 
@@ -237,20 +250,13 @@ def process_jsonl(input_path, output_path):
 def main():
     """Main function."""
     if len(sys.argv) < 2:
-        print("Usage: python extract_description_text.py <input_jsonl> [output_jsonl]")
-        print("Example: python extract_description_text.py data/raw/descriptions_by_source.jsonl data/processed/descriptions_with_text.jsonl")
+        print("Usage: python extract_description_text.py <input_jsonl>")
+        print("Example: python extract_description_text.py data/raw/descriptions_by_source.jsonl")
+        print("Adds 'descriptions_text' field to each record in the file (modifies in place).")
         sys.exit(1)
 
     input_path = sys.argv[1]
-
-    if len(sys.argv) >= 3:
-        output_path = sys.argv[2]
-    else:
-        # Default output path
-        input_file = Path(input_path)
-        output_path = input_file.parent.parent / 'processed' / 'descriptions_with_text.jsonl'
-
-    success = process_jsonl(input_path, output_path)
+    success = process_jsonl(input_path)
 
     if not success:
         sys.exit(1)
