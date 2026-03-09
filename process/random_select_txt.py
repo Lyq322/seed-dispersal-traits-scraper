@@ -9,9 +9,13 @@ under the destination.
 
 Supports optional --tag (one or more) to filter by the "tags" field in a descriptions JSONL
 (e.g. --tag has_seed --tag lang_es); record must have ALL of the tags.
+Supports optional --min-length / --max-length to filter by "descriptions_text" length (in characters).
 Uses the "txt_filename" field in each record (written by jsonl_to_txt_files.py) to match
 files: only .txt files whose path relative to a source dir equals a record's txt_filename are included.
 """
+
+from typing import Any
+
 
 import argparse
 import json
@@ -22,11 +26,21 @@ from pathlib import Path
 
 
 
-def load_allowed_txt_filenames(descriptions_jsonl_path, required_tags):
+def load_allowed_txt_filenames(
+    descriptions_jsonl_path,
+    required_tags=None,
+    min_length=None,
+    max_length=None,
+):
     """
     Load the set of txt_filename values (e.g. batch_0000/name.txt) for records
-    that have ALL required_tags and a non-empty txt_filename field.
+    that pass optional tag filter (ALL required_tags), optional length filter
+    (len(descriptions_text) in [min_length, max_length]), and have a non-empty txt_filename.
+
+    required_tags: if not None/empty, record must have ALL of these tags.
+    min_length / max_length: if set, record's descriptions_text length must be >= min and <= max.
     """
+    print('descriptions_jsonl_path', descriptions_jsonl_path)
     path = Path(descriptions_jsonl_path)
     if not path.exists():
         return None
@@ -40,14 +54,23 @@ def load_allowed_txt_filenames(descriptions_jsonl_path, required_tags):
                 obj = json.loads(line)
                 if not isinstance(obj, dict):
                     continue
-                tags = set(obj.get("tags") or [])
-                if not all(t in tags for t in required_tags):
-                    continue
+                if required_tags:
+                    tags = set[Any](obj.get("tags") or [])
+                    if not all(t in tags for t in required_tags):
+                        continue
+                if min_length is not None or max_length is not None:
+                    text = obj.get("descriptions_text") or ""
+                    if not isinstance(text, str):
+                        text = ""
+                    L = len(text)
+                    if min_length is not None and L < min_length:
+                        continue
+                    if max_length is not None and L > max_length:
+                        continue
                 txt_fn = obj.get("txt_filename")
                 if txt_fn and isinstance(txt_fn, str):
                     txt_fn = txt_fn.strip()
                     if txt_fn:
-                        # Normalize to forward slashes for consistent matching
                         allowed.add(txt_fn.replace("\\", "/"))
             except json.JSONDecodeError:
                 continue
@@ -61,6 +84,8 @@ def random_select_txt_files(
     num_batches=None,
     tags=None,
     tags_jsonl=None,
+    min_length=None,
+    max_length=None,
 ):
     """
     Randomly select num_files txt files from one or more source dirs and copy to dest_dir.
@@ -74,7 +99,9 @@ def random_select_txt_files(
                      under dest_dir and distribute selected files across them (round-robin).
         tags: Optional list of tags to filter by (e.g. ["has_seed", "has_fruit"]);
               only txt files whose row has ALL of these tags in the descriptions JSONL are considered.
-        tags_jsonl: Path to descriptions JSONL with "tags" and "txt_filename" per record (from jsonl_to_txt_files).
+        tags_jsonl: Path to descriptions JSONL with "tags", "txt_filename", "descriptions_text" per record.
+        min_length: Optional minimum length (characters) of descriptions_text to include.
+        max_length: Optional maximum length (characters) of descriptions_text to include.
 
     Returns:
         True if successful
@@ -104,11 +131,20 @@ def random_select_txt_files(
 
     total_txt_files = len(txt_files)
 
-    if tags and tags_jsonl:
-        allowed_txt_filenames = load_allowed_txt_filenames(tags_jsonl, tags)
+    use_jsonl_filter = (tags and tags_jsonl) or (tags_jsonl and (min_length is not None or max_length is not None))
+    if use_jsonl_filter:
+        if not tags_jsonl:
+            tags_jsonl = "data/processed/descriptions_text_by_source.jsonl"
+        allowed_txt_filenames = load_allowed_txt_filenames(
+            tags_jsonl,
+            required_tags=tags or None,
+            min_length=min_length,
+            max_length=max_length,
+        )
         if allowed_txt_filenames is None:
             print(f"Error: Descriptions JSONL not found: {tags_jsonl}")
             return False
+        print('allowed_txt_filenames', allowed_txt_filenames)
 
         # Keep only files whose path relative to their source_dir is in allowed (txt_filename from JSONL)
         filtered = []
@@ -122,9 +158,19 @@ def random_select_txt_files(
                 filtered.append((source_dir, f))
         txt_files = filtered
         if not txt_files:
-            print(f"Error: No .txt files found with all tags {tags!r} (txt_filename in JSONL)")
+            msg = "No .txt files found matching JSONL filter"
+            if tags:
+                msg += f" (tags {tags!r})"
+            if min_length is not None or max_length is not None:
+                msg += f" (description length {min_length or 0}-{max_length or '∞'} chars)"
+            print(f"Error: {msg}")
             return False
-        print(f"Filtered to {len(txt_files):,} files with all tags {tags} ({len(txt_files):,} of {total_txt_files:,} total)")
+        filter_desc = []
+        if tags:
+            filter_desc.append(f"all tags {tags}")
+        if min_length is not None or max_length is not None:
+            filter_desc.append(f"length {min_length or 0}-{max_length or '∞'} chars")
+        print(f"Filtered to {len(txt_files):,} files ({', '.join(filter_desc)}) ({len(txt_files):,} of {total_txt_files:,} total)")
 
     # Drop source_dir for the rest of the function (we only need the file path)
     txt_files = [f for _, f in txt_files]
@@ -164,7 +210,6 @@ def random_select_txt_files(
                 names_in_batch.add(dest_name)
             dest = batch_dir / dest_name
             shutil.copy2(src, dest)
-            print(f"  Copied: {src.name} -> {batch_dir.name}/")
         print()
         print(f"Copied {len(selected)} files into {num_batches} batch folders under {dest_dir}")
     else:
@@ -238,7 +283,21 @@ def main():
         type=str,
         default=None,
         metavar="PATH",
-        help="Path to descriptions JSONL for tag filtering (default: data/processed/descriptions_text_by_source.jsonl)",
+        help="Path to descriptions JSONL for tag/length filtering (default: data/processed/descriptions_text_by_source.jsonl)",
+    )
+    parser.add_argument(
+        "--min-length",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only include records whose descriptions_text has at least N characters",
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only include records whose descriptions_text has at most N characters",
     )
     args = parser.parse_args()
 
@@ -258,10 +317,12 @@ def main():
         print(f"Batch folders: {args.num_batches}")
     if args.tags:
         print(f"Tag filter (all of): {args.tags}")
+    if args.min_length is not None or args.max_length is not None:
+        print(f"Description length: {args.min_length or 0} - {args.max_length or '∞'} chars")
     print("-" * 60)
 
     tags_jsonl = None
-    if args.tags:
+    if args.tags or args.min_length is not None or args.max_length is not None:
         tags_jsonl = args.jsonl or "data/processed/descriptions_text_by_source.jsonl"
     success = random_select_txt_files(
         args.source_dirs,
@@ -270,6 +331,8 @@ def main():
         num_batches=args.num_batches,
         tags=args.tags,
         tags_jsonl=tags_jsonl,
+        min_length=args.min_length,
+        max_length=args.max_length,
     )
 
     if not success:
