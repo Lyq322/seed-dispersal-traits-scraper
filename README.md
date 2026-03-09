@@ -1,6 +1,6 @@
 # Seed dispersal traits scraper
 
-Pipeline for scraping plant species descriptions from World Flora Online, extracting and tagging text. Descriptions data is later used for seed dispersal trait extraction using NLP and other methods.
+Pipeline for scraping plant species descriptions from World Flora Online, extracting and tagging text. Descriptions are later used for seed dispersal trait extraction using NLP and other methods.
 
 ---
 
@@ -17,13 +17,13 @@ seed-dispersal-traits-scraper/
 │   └── flora_of_china.py                 # Flora of China scraper
 │
 ├── process/                  # Data processing scripts (JSONL in/out)
-│   ├── extract_descriptions.py           # Extract descriptions from raw HTML in WFO JSONL → descriptions_by_source*.jsonl
-│   ├── extract_description_text.py       # Extract plain text from description records
-│   ├── filter_jsonl.py                   # Filter JSONL by field=value (e.g. page_type=species)
-│   ├── jsonl_to_txt_files.py             # Convert descriptions JSONL → folder of .txt files (batched by language)
-│   ├── random_select_txt.py              # Randomly sample .txt files (e.g. for annotation)
+│   ├── extract_descriptions.py           # Extract description-related HTML, separated by source, from entire raw HTML of every page
+│   ├── extract_description_text.py       # Extract plain text from description HTML
+│   ├── filter_jsonl.py                   # Creates new JSONL from input JSON using filter field=value (e.g. page_type=species)
+│   ├── jsonl_to_txt_files.py             # Convert descriptions JSONL → folder of .txt files
+│   ├── random_select_txt.py              # Randomly sample .txt files by count/batches with optional filters
 │   ├── tag_language.py                   # Detect language of description text, add lang_* tags to each record's tags field
-│   └── tag_seedless.py                   # Tag seedless / has_seed (or similar) for filtering
+│   └── tag_seedless.py                   # Tag seedless / has_seed for filtering
 │
 ├── analyze/                  # Analysis and inspection
 │   ├── analyze_jsonl.py              # Count unique families, orders, genera, species in JSONL
@@ -36,7 +36,7 @@ seed-dispersal-traits-scraper/
 │   ├── plot_descriptions_distribution.py # Plot description stats
 │   └── *.png                 # Generated plots (e.g. species_description_lengths.png)
 │
-├── archive/                  # Archived / legacy scripts (moved from process/ and analyze/)
+├── archive/                  # Archived / legacy scripts
 │   ├── combine_world_flora_online.py     # Merge/combine WFO JSONL outputs
 │   ├── combine_jsonl_to_jsonl_and_csv.py # Combine JSONL and export CSV
 │   ├── build_fruit_type_variants_csv.py  # Build fruit-type variant mappings
@@ -57,16 +57,9 @@ seed-dispersal-traits-scraper/
 ├── data/                     # All data (git-ignored in practice; paths used by scripts)
 │   ├── raw/                  # Scraper output: world_flora_online*.jsonl, etc.
 │   ├── processed/            # Extracted/tagged: descriptions_by_source*.jsonl, descriptions_text_by_source.jsonl (with tags field)
-│   ├── flora_traiter/        # Batched .txt by language (from jsonl_to_txt_files) for annotation
-│   ├── flora_of_china_raw/   # Raw Flora of China data
-│   ├── mistral_llm/          # LLM-related outputs
-│   ├── translations/         # Translation outputs
-│   └── ...                   # Other dataset variants (e.g. test_small, test_medium)
+│   └── ...
 │
-├── logs/                     # Scraper and script logs
-├── result/                   # Result artifacts (e.g. flora_traiter HTML)
-├── test_small/               # Small test .txt sample (by language)
-└── test_medium/              # Medium test .txt sample (by language)
+└── logs/                     # Scraper and script logs
 ```
 
 ---
@@ -74,28 +67,39 @@ seed-dispersal-traits-scraper/
 ## Quick start
 
 1. **Install dependencies**
-   ```bash
+  ```bash
    pip install -r requirements.txt
-   ```
-
-2. **Scraping** (optional; uses existing `data/raw` if present)
-   - Run `scraping/world_flora_online.py` or `world_flora_online_plant_list.py` to fetch WFO pages into `data/raw/*.jsonl`.
-
+  ```
+2. **Scraping**
+  `scraping/world_flora_online_plant_list.py` is the most up to date scraping script. Use this instead of `scraping/world_flora_online.py` for scraping WFO.
+  1. Download a snapshot of WFO plant list from [https://wfoplantlist.org/classifications](https://wfoplantlist.org/classifications), e.g. `plant_list_2025-12.json.zip`. Update `PLANT_LIST_PATH` in `scraping/world_flora_online_plant_list.py` with the path of the plant list json.
+  2. Run `scraping/world_flora_online_plant_list.py` to scrape all accepted species from World Flora Online. The script writes a jsonl file to `data/raw/world_flora_online_plant_list.jsonl` with the following fields:
+    - source: always "World Flora Online"
+    - identifier: WFO taxon ID, e.g. "wfo-0000814642" for Lobelia zwartkopensis
+    - page_type: always "species"
+    - order_name, family_name, genus_name, species_name
+    - url: full page URL (e.g. [https://www.worldfloraonline.org/taxon/{identifier}](https://www.worldfloraonline.org/taxon/{identifier}))
+    - raw_html: full HTML of the species page
+    - timestamp: ISO timestamp when the page was fetched
 3. **Processing**
-   - Extract descriptions:
-     `python process/extract_descriptions.py data/raw/world_flora_online_species.jsonl data/processed/descriptions_by_source_species.jsonl`
-   - Build text-by-source and tags (see scripts in `process/`), then e.g. `tag_language.py`, `tag_seedless.py`.
-   - Export to .txt:
-     `python process/jsonl_to_txt_files.py` (inputs/outputs as in script/docstring).
-
+  - Extract descriptions from raw WFO JSONL:
+   `python process/extract_descriptions.py data/raw/world_flora_online.jsonl data/processed/descriptions_text_by_source.jsonl`
+  - Extract plain text from description HTML (modifies file in place):
+  `python process/extract_description_text.py data/processed/descriptions_text_by_source.jsonl`
+  - Optionally add tags: run `process/tag_language.py data/processed/descriptions_text_by_source.jsonl` and `process/tag_seedless.py data/processed/descriptions_text_by_source.jsonl` on that JSONL (default path: `data/processed/descriptions_text_by_source.jsonl`).
+  - Export to .txt:
+  `python process/jsonl_to_txt_files.py data/processed/descriptions_text_by_source.jsonl`.
+  - Optionally sample .txt files for annotation, e.g.
+  `python process/random_select_txt.py 500 test_small --sources data/processed/descriptions_text_by_source_txt --batches 5 --tag has_seed --tag lang_en`
 4. **Browse**
-   - From repo root: `python web/app.py` → open http://127.0.0.1:5000 (see `web/README.md`).
+  - From repo root: `python web/app.py` → open [http://127.0.0.1:5000](http://127.0.0.1:5000) (see `web/README.md`).
 
 ---
 
-## Data flow (summary)
+## Data flow
 
-- **Raw**: Scrapers write `data/raw/*.jsonl` (e.g. `world_flora_online_species.jsonl`, `world_flora_online_complete.jsonl`).
-- **Processed**: `extract_descriptions.py` and related scripts produce `data/processed/descriptions_by_source*.jsonl`, `descriptions_text_by_source.jsonl` (each record has a `tags` field after running tag_*.py).
-- **Export**: `jsonl_to_txt_files.py` writes batched `.txt` files (e.g. under `data/flora_traiter/` by language) for annotation or downstream use.
-- **Web**: `web/app.py` reads `descriptions_text_by_source.jsonl` (tags in each record), builds an in-memory index, and serves the browser UI with filters and pagination.
+- **Raw**: Scrapers write `data/raw/*.jsonl` (e.g. `world_flora_online.jsonl``).
+- **Processed**: `extract_descriptions.py` → `descriptions_text_by_source.jsonl`. `extract_description_text.py` adds a `descriptions_text` field in place. `tag_language.py` and `tag_seedless.py` adds tags to a `tags` field (list) in place.
+- **Export**: `jsonl_to_txt_files.py` reads `descriptions_text_by_source.jsonl`, writes batched `.txt` files under e.g. `data/processed/descriptions_text_by_source_txt/`, and adds `txt_filename` field to each record in jsonl.
+- **Sampling**: `random_select_txt.py` can sample from those .txt dirs (optionally filtered by tags via the same JSONL) into e.g. `test_small/` or `test_medium/` with optional batch subfolders.
+- **Web**: `web/app.py` reads `data/processed/descriptions_text_by_source.jsonl`, builds an in-memory index, and serves the browser UI with filters and pagination (see `web/README.md`).
