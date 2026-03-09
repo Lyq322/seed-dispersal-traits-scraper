@@ -1,7 +1,7 @@
 """
 Script to plot the distribution of description text lengths.
 
-python analyze/plot_description_lengths.py data/processed/descriptions_text_by_source_species.jsonl plots/species_description_lengths.png
+python analyze/plot_description_lengths.py data/processed/descriptions_text_by_source.jsonl plots/species_description_lengths.png
 """
 
 import json
